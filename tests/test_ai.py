@@ -10,7 +10,7 @@ from ofm.ai.evaluator import heuristic_review, review
 from ofm.ai.llm import LocalLLM, extract_json
 from ofm.ai.lore import NameGen, generate_lore
 from ofm.config import load_config
-from ofm.world import World
+from ofm.world import region_names
 
 
 def test_extract_json_handles_chatter_and_fences():
@@ -20,7 +20,7 @@ def test_extract_json_handles_chatter_and_fences():
 
 
 def test_validate_action_whitelist():
-    regions = World.all_regions()
+    regions = region_names(4)
     a = validate_action({"type": "add_poi", "region": "b3", "kind": "ruin"}, regions)
     assert a["region"] == "B3" and a["kind"] == "ruin"
     assert validate_action({"type": "raise_relief", "region": "A1", "amount": 9}, regions)["amount"] == 0.6
@@ -122,7 +122,7 @@ def test_heuristic_review_targets_weak_spots(small_world):
     r = heuristic_review(small_world, [], 5, "ko")
     assert 0 < len(r["actions"]) <= 5
     assert "종합" in r["critique"]
-    regions = World.all_regions()
+    regions = region_names(4)
     for a in r["actions"]:
         validate_action(a, regions)
 

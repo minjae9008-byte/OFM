@@ -14,8 +14,12 @@ import numpy as np
 
 from .config import OFMConfig
 
-REGION_DIVS = 4
-REGION_ROWS = "ABCD"
+REGION_ROWS = "ABCDEFGH"   # rows south -> north; columns are numbered 1.. west -> east
+
+
+def region_names(divs: int = 4) -> list[str]:
+    """All region ids of a divs x divs grid, e.g. A1..D4 for divs = 4."""
+    return [f"{REGION_ROWS[r]}{c + 1}" for r in range(divs) for c in range(divs)]
 
 
 @dataclass
@@ -130,20 +134,28 @@ class World:
         return w
 
     # -- regions ------------------------------------------------------------
+    @property
+    def region_divs(self) -> int:
+        return int(self.cfg.evaluation.region_divs)
+
     def region_of(self, x: float, y: float) -> str:
-        n = REGION_DIVS
+        n = self.region_divs
         c = int(np.clip(x / self.extent * n, 0, n - 1))
         r = int(np.clip(y / self.extent * n, 0, n - 1))
         return f"{REGION_ROWS[r]}{c + 1}"
 
     def region_slices(self, region: str) -> tuple[slice, slice]:
-        r = REGION_ROWS.index(region[0].upper())
-        c = int(region[1:]) - 1
-        if not (0 <= r < REGION_DIVS and 0 <= c < REGION_DIVS):
+        """Array slices (rows, cols) of a region; bounds are spread evenly for any divs."""
+        n = self.region_divs
+        try:
+            r = REGION_ROWS.index(region[0].upper())
+            c = int(region[1:]) - 1
+        except (ValueError, IndexError):
+            raise ValueError(f"bad region {region}") from None
+        if not (0 <= r < n and 0 <= c < n):
             raise ValueError(f"bad region {region}")
-        step = self.size // REGION_DIVS
-        return slice(r * step, (r + 1) * step), slice(c * step, (c + 1) * step)
+        edges = np.linspace(0, self.size, n + 1).round().astype(int)
+        return slice(edges[r], edges[r + 1]), slice(edges[c], edges[c + 1])
 
-    @staticmethod
-    def all_regions() -> list[str]:
-        return [f"{REGION_ROWS[r]}{c + 1}" for r in range(REGION_DIVS) for c in range(REGION_DIVS)]
+    def all_regions(self) -> list[str]:
+        return region_names(self.region_divs)

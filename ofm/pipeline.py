@@ -1,8 +1,10 @@
 """Stage orchestration.
 
-    tectonics -> strata -> erosion -> basins            (world.height_base)
+    tectonics -> strata -> fluvial (stream power) -> droplet + thermal erosion -> basins
+                                                                (world.height_base)
     climate -> hydrology -> biomes -> cliffs/caves/features
-    -> detail heightfield -> POIs/scatter -> psychology
+    -> detail heightfield (hires erosion, scree, beaches, floodplains) -> POIs/scatter
+    -> terrain quality analysis -> psychology
     [AI director loop edits height_base / features / POIs and rebuilds]
     -> lore -> volume meshing -> export
 
@@ -48,9 +50,14 @@ def generate_base(cfg: OFMConfig, progress: Progress | None = None) -> World:
         world.plate_id = tec.plate_id
     with _stage(world, "strata", progress):
         world.strata = Strata(cfg, tec.uplift, wc.cell_size)
+    h = tec.height
+    if cfg.fluvial.enabled:
+        from .physics.fluvial import stream_power_erosion
+        with _stage(world, "fluvial", progress):
+            h = stream_power_erosion(h, tec.uplift, world.strata, cfg)
     with _stage(world, "erosion", progress):
         rng = np.random.default_rng(derive_seed(wc.seed, "erosion"))
-        h = hydraulic_erosion(tec.height, world.strata.hardness, cfg.erosion, rng)
+        h = hydraulic_erosion(h, world.strata.hardness, cfg.erosion, rng)
         h = thermal_erosion(h, world.strata.hardness, cfg.erosion, wc.cell_size)
         h = carve_basins(h, cfg)
         world.height_base = h
@@ -112,6 +119,10 @@ def rebuild(world: World, progress: Progress | None = None, psych: bool = True) 
         world.hires, world.hires_spacing = amplify(world)
         world.scatter = scatter_vegetation(world)
         world.pois = place_pois(world)
+    if cfg.quality.enabled:
+        from .quality.metrics import analyze_terrain
+        with _stage(world, "quality", progress):
+            world.evaluation["terrain"] = analyze_terrain(world)
     if psych:
         from .psych.interest import evaluate_psychology
         with _stage(world, "psychology", progress):

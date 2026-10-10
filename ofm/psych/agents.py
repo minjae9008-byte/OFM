@@ -161,7 +161,8 @@ def simulate_agents(world, per: Perception, landmarks, lm_visible: np.ndarray) -
     logs: list[AgentLog] = []
     names = list(PERSONALITIES)
     total_time = pc.agent_minutes * 60.0
-    for a in range(pc.agents):
+    n_agents = pc.agents or sum(max(0, p.count) for p in world.cfg.evaluation.profiles)
+    for a in range(n_agents):
         pers = names[a % len(names)]
         wts = PERSONALITIES[pers]
         log = AgentLog(personality=pers)

@@ -9,9 +9,14 @@ from __future__ import annotations
 
 import copy
 import tomllib
+import typing
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
+
+# Names of the actions the AI director may request (kept here so config validation
+# does not need to import the AI package).
+AI_ACTIONS = ("add_landmark", "add_cave", "add_lake", "add_poi", "raise_relief", "smooth_terrain", "set_param")
 
 
 @dataclass
@@ -93,6 +98,27 @@ class ErosionConfig:
 
 
 @dataclass
+class FluvialConfig:
+    """Stream-power landscape evolution (dE/dt = U - K A^m S^n + diffusion), solved
+    implicitly along the drainage stack (Braun & Willett 2013), with optional
+    sediment deposition (Yuan et al. 2019). Carves dendritic valley networks
+    before the droplet erosion adds gullies."""
+    enabled: bool = True
+    iterations: int = 24
+    resolution_divisor: int = 2     # solve on a coarser grid, add the change back (1 = full res)
+    dt_years: float = 20000.0
+    k_erosion: float = 6.0e-6       # erodibility for soft rock (scaled by 1 - hardness_effect * hardness)
+    m: float = 0.45                 # drainage-area exponent
+    n: float = 1.0                  # slope exponent (implicit solver is exact for n = 1)
+    uplift_rate: float = 4.0e-4     # m/yr at full orogenic uplift
+    diffusion: float = 0.01         # hillslope diffusivity (m^2/yr)
+    deposition: float = 0.6         # dimensionless deposition coefficient G (0 = detachment-limited)
+    hardness_effect: float = 0.8
+    max_change: float = 220.0       # metres: cap on cumulative change (keeps game-scale relief)
+    strength: float = 1.0           # blend of the evolved terrain into the input (0..1)
+
+
+@dataclass
 class ClimateConfig:
     latitude_south: float = 36.0
     latitude_north: float = 48.0
@@ -157,6 +183,24 @@ class VolumeConfig:
 
 
 @dataclass
+class HiresConfig:
+    """Processes applied on the export-resolution heightfield (detail amplification)."""
+    erosion: bool = True            # droplet erosion at export resolution (fine gullies)
+    droplets_per_cell: float = 0.25
+    erosion_strength: float = 0.5
+    scree: bool = True              # talus aprons accumulate below cliffs
+    scree_strength: float = 0.6
+    scree_reach_m: float = 40.0
+    beaches: bool = True            # gentle beach / shoreface profile on soft, low coasts
+    beach_width_m: float = 45.0
+    beach_slope_deg: float = 3.5
+    wave_platform: bool = True      # wave-cut platform at the foot of hard sea cliffs
+    floodplains: bool = True        # flat alluvial floors along rivers
+    floodplain_width_k: float = 3.0 # x channel width
+    floodplain_flatten: float = 0.7
+
+
+@dataclass
 class DetailConfig:
     upscale: int = 2                # export heightmap = size*upscale + 1
     rock_detail: float = 0.32       # x cell size
@@ -164,6 +208,21 @@ class DetailConfig:
     scatter_max: int = 60000
     poi_count: int = 26
     poi_spacing: float = 280.0
+    hires: HiresConfig = field(default_factory=HiresConfig)
+
+
+@dataclass
+class QualityConfig:
+    """Terrain quality analysis (geomorphometry). Bands are [low, high] ranges that
+    score 10; values outside fall off smoothly."""
+    enabled: bool = True
+    slope_median_deg: list[float] = field(default_factory=lambda: [8.0, 26.0])
+    hypsometric_integral: list[float] = field(default_factory=lambda: [0.2, 0.6])
+    drainage_density_km: list[float] = field(default_factory=lambda: [0.8, 5.0])   # km of river per km2
+    spectral_slope: list[float] = field(default_factory=lambda: [1.8, 3.4])        # radial power-spectrum exponent
+    max_pit_fraction: float = 0.002     # closed depressions not explained by lakes
+    max_spike_fraction: float = 0.001   # single-cell spikes / holes
+    max_axis_artifact: float = 0.25     # anisotropy aligned with the grid axes
 
 
 @dataclass
@@ -174,11 +233,172 @@ class PsychConfig:
     eye_height: float = 1.7
     view_distance: float = 2600.0
     landmarks: int = 14
-    agents: int = 8
+    agents: int = 0                 # 0 = use evaluation.profiles counts; >0 = cycle profiles
     agent_minutes: float = 18.0
     run_speed: float = 5.5          # m/s on flat ground
     boredom_seconds: float = 75.0
     max_walk_slope_deg: float = 42.0
+
+
+@dataclass
+class ScoreWeights:
+    """Weights of the 0-10 sub-scores in the overall map score (normalised by their sum)."""
+    scenic: float = 0.15
+    variety: float = 0.13
+    legibility: float = 0.13
+    mystery: float = 0.13
+    pacing: float = 0.17
+    exploration: float = 0.11
+    prospect_refuge: float = 0.1
+    orientation: float = 0.04
+    terrain_quality: float = 0.04
+
+
+@dataclass
+class PreferenceWeights:
+    """Per-location landscape preference (Kaplan matrix + Appleton)."""
+    coherence: float = 0.24
+    complexity: float = 0.18
+    legibility: float = 0.2
+    mystery: float = 0.26
+    prospect_refuge: float = 0.12
+
+
+@dataclass
+class EventValues:
+    """Experience value of agent events; events >= strong_threshold reset boredom."""
+    landmark_seen: float = 0.8
+    landmark_reached: float = 1.0
+    poi_discovered: float = 0.1         # + poi_discovered_importance * importance
+    poi_discovered_importance: float = 0.5
+    poi_reached: float = 0.6            # + poi_reached_importance * importance
+    poi_reached_importance: float = 0.6
+    new_biome: float = 0.4
+    vista: float = 0.5
+    vista_cooldown_s: float = 180.0
+    water_seen: float = 0.35
+    cave_entered: float = 0.9
+    strong_threshold: float = 0.35
+
+
+@dataclass
+class TargetBands:
+    """Designer targets. A metric inside its band scores 10 (see psych/scoring.py)."""
+    event_gap_s: list[float] = field(default_factory=lambda: [20.0, 60.0])
+    bored_fraction: list[float] = field(default_factory=lambda: [0.0, 0.15])
+    discoveries_per_hour: list[float] = field(default_factory=lambda: [20.0, 45.0])
+    coverage_seen: list[float] = field(default_factory=lambda: [0.5, 0.95])
+    landmark_coverage: list[float] = field(default_factory=lambda: [0.6, 1.0])
+    lost_fraction: list[float] = field(default_factory=lambda: [0.0, 0.2])
+    backtrack_ratio: list[float] = field(default_factory=lambda: [0.0, 0.35])
+
+
+@dataclass
+class AgentProfile:
+    """A play-tester personality. Weights scale the utility of goal types."""
+    name: str = "explorer"
+    count: int = 2
+    poi: float = 0.6
+    landmark: float = 0.7
+    frontier: float = 1.4
+    speed: float = 1.0              # multiplier on psych.run_speed
+    view: float = 1.0               # multiplier on discovery distance
+    risk_aversion: float = 0.3      # extra cost on steep edges (0..1)
+    stamina_s: float = 240.0        # seconds of climbing before fatigue sets in
+    fatigue_slowdown: float = 0.35  # speed loss when fatigued
+    randomness: float = 0.25        # Gumbel noise on goal choice
+    boredom_s: float = 0.0          # 0 = psych.boredom_seconds
+
+
+def _default_profiles() -> list[AgentProfile]:
+    return [
+        AgentProfile("explorer", 2, poi=0.6, landmark=0.7, frontier=1.4, risk_aversion=0.2),
+        AgentProfile("achiever", 2, poi=1.5, landmark=0.9, frontier=0.5, risk_aversion=0.4),
+        AgentProfile("wanderer", 2, poi=0.8, landmark=1.0, frontier=1.0, randomness=0.6),
+        AgentProfile("sightseer", 2, poi=0.7, landmark=1.6, frontier=0.7, speed=0.85, risk_aversion=0.6),
+    ]
+
+
+@dataclass
+class EvaluationConfig:
+    runs: int = 2                   # Monte Carlo repetitions with different agent seeds
+    confidence: float = 0.9         # confidence level of reported intervals
+    region_divs: int = 4            # region grid (A1..D4 for 4)
+    orientation_lost_s: float = 90.0  # seconds with no landmark in view before an agent is lost
+    weights: ScoreWeights = field(default_factory=ScoreWeights)
+    preference: PreferenceWeights = field(default_factory=PreferenceWeights)
+    events: EventValues = field(default_factory=EventValues)
+    targets: TargetBands = field(default_factory=TargetBands)
+    profiles: list[AgentProfile] = field(default_factory=_default_profiles)
+
+
+@dataclass
+class ActionLimits:
+    """Maximum number of times the AI may apply each action over a whole run."""
+    add_landmark: int = 4
+    add_cave: int = 3
+    add_lake: int = 2
+    add_poi: int = 12
+    raise_relief: int = 2
+    smooth_terrain: int = 2
+    set_param: int = 3
+
+
+@dataclass
+class ParamRange:
+    path: str = "caves.density"
+    min: float = 0.2
+    max: float = 3.0
+
+
+def _default_param_ranges() -> list[ParamRange]:
+    return [
+        ParamRange("caves.density", 0.2, 3.0),
+        ParamRange("caves.branch_chance", 0.0, 0.1),
+        ParamRange("caves.chamber_chance", 0.0, 0.1),
+        ParamRange("cliffs.undercut_depth", 0.0, 14.0),
+        ParamRange("cliffs.terrace_strength", 0.0, 1.0),
+        ParamRange("hydrology.river_min_discharge", 0.3, 6.0),
+        ParamRange("detail.poi_count", 8, 60),
+        ParamRange("detail.poi_spacing", 120.0, 600.0),
+        ParamRange("climate.orographic", 0.1, 1.5),
+    ]
+
+
+@dataclass
+class ProtectedZone:
+    """Circle the AI must not touch (e.g. a hand-authored town)."""
+    x: float = 0.0
+    y: float = 0.0
+    radius: float = 200.0
+    reason: str = ""
+
+
+@dataclass
+class AIScopeConfig:
+    """The sandbox the local model operates in. Everything outside is rejected and logged."""
+    allowed_actions: list[str] = field(default_factory=lambda: list(AI_ACTIONS))
+    limits: ActionLimits = field(default_factory=ActionLimits)
+    max_actions_per_iteration: int = 5
+    max_total_actions: int = 20
+    allowed_regions: list[str] = field(default_factory=list)     # empty = every region
+    protected_regions: list[str] = field(default_factory=list)
+    protected_zones: list[ProtectedZone] = field(default_factory=list)
+    protect_spawn_radius: float = 250.0      # keep the agents' spawn settlement untouched
+    max_height_delta_m: float = 80.0         # largest change of any cell in one edit
+    max_total_height_delta_m: float = 160.0  # largest cumulative change of any cell
+    max_modified_area_fraction: float = 0.2  # share of land cells the AI may change (> 0.5 m)
+    param_ranges: list[ParamRange] = field(default_factory=_default_param_ranges)
+    max_llm_calls: int = 16
+    max_llm_seconds: float = 900.0
+    max_prompt_chars: int = 24000
+    num_ctx: int = 8192
+    max_output_tokens: int = 1500
+    retries: int = 2                # repair attempts when the reply is not valid JSON / schema
+    samples: int = 1                # self-consistency: independent reviews merged per call
+    json_schema: bool = True        # send a JSON schema (structured outputs) when supported
+    dry_run: bool = False           # log what the model would do without applying it
+    min_objective_gain: float = 0.0 # accept an iteration only if the objective rises by more than this
 
 
 @dataclass
@@ -194,6 +414,7 @@ class AIConfig:
     language: str = "ko"
     llm_score_weight: float = 0.3
     use_system_proxy: bool = False
+    scope: AIScopeConfig = field(default_factory=AIScopeConfig)
 
 
 @dataclass
@@ -209,6 +430,7 @@ class OFMConfig:
     world: WorldConfig = field(default_factory=WorldConfig)
     tectonics: TectonicsConfig = field(default_factory=TectonicsConfig)
     strata: StrataConfig = field(default_factory=StrataConfig)
+    fluvial: FluvialConfig = field(default_factory=FluvialConfig)
     erosion: ErosionConfig = field(default_factory=ErosionConfig)
     climate: ClimateConfig = field(default_factory=ClimateConfig)
     hydrology: HydrologyConfig = field(default_factory=HydrologyConfig)
@@ -216,7 +438,9 @@ class OFMConfig:
     cliffs: CliffConfig = field(default_factory=CliffConfig)
     volume: VolumeConfig = field(default_factory=VolumeConfig)
     detail: DetailConfig = field(default_factory=DetailConfig)
+    quality: QualityConfig = field(default_factory=QualityConfig)
     psych: PsychConfig = field(default_factory=PsychConfig)
+    evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     ai: AIConfig = field(default_factory=AIConfig)
     export: ExportConfig = field(default_factory=ExportConfig)
 
@@ -251,6 +475,16 @@ def _coerce(value: Any, current: Any, path: str) -> Any:
     return value
 
 
+def _list_item_type(obj: Any, key: str) -> type | None:
+    """Dataclass element type of a ``list[SomeDataclass]`` field, else None."""
+    hint = typing.get_type_hints(type(obj)).get(key)
+    if typing.get_origin(hint) is list:
+        args = typing.get_args(hint)
+        if args and is_dataclass(args[0]):
+            return args[0]
+    return None
+
+
 def _merge(obj: Any, data: dict[str, Any], path: str = "") -> None:
     known = {f.name: f for f in fields(obj)}
     for key, value in data.items():
@@ -258,10 +492,18 @@ def _merge(obj: Any, data: dict[str, Any], path: str = "") -> None:
         if key not in known:
             raise ConfigError(f"unknown config key '{full}'")
         current = getattr(obj, key)
+        item_type = _list_item_type(obj, key)
         if is_dataclass(current) and isinstance(value, dict):
             _merge(current, value, full)
-        elif key == "layers" and isinstance(value, list):
-            setattr(obj, key, [RockLayerConfig(**layer) for layer in value])
+        elif item_type is not None and isinstance(value, list):
+            items = []
+            for i, entry in enumerate(value):
+                if not isinstance(entry, dict):
+                    raise ConfigError(f"{full}[{i}]: expected a table")
+                item = item_type()
+                _merge(item, entry, f"{full}[{i}]")
+                items.append(item)
+            setattr(obj, key, items)
         else:
             setattr(obj, key, _coerce(value, current, full))
 
@@ -324,3 +566,26 @@ def validate(cfg: OFMConfig) -> None:
             raise ConfigError(f"unknown export engine '{engine}'")
     if cfg.ai.provider not in ("auto", "ollama", "openai", "none"):
         raise ConfigError("ai.provider must be auto, ollama, openai or none")
+    ev = cfg.evaluation
+    if not 2 <= ev.region_divs <= 8:
+        raise ConfigError("evaluation.region_divs must be between 2 and 8")
+    if ev.runs < 1:
+        raise ConfigError("evaluation.runs must be >= 1")
+    if not ev.profiles or sum(max(0, p.count) for p in ev.profiles) == 0:
+        raise ConfigError("evaluation.profiles must define at least one agent")
+    if any(v < 0 for v in asdict(ev.weights).values()) or sum(asdict(ev.weights).values()) <= 0:
+        raise ConfigError("evaluation.weights must be non-negative and not all zero")
+    for name in ("event_gap_s", "bored_fraction", "discoveries_per_hour", "coverage_seen",
+                 "landmark_coverage", "lost_fraction", "backtrack_ratio"):
+        band = getattr(ev.targets, name)
+        if len(band) != 2 or band[0] > band[1]:
+            raise ConfigError(f"evaluation.targets.{name} must be [low, high]")
+    sc = cfg.ai.scope
+    bad = [a for a in sc.allowed_actions if a not in AI_ACTIONS]
+    if bad:
+        raise ConfigError(f"ai.scope.allowed_actions has unknown actions: {', '.join(bad)}")
+    for pr in sc.param_ranges:
+        if pr.min > pr.max:
+            raise ConfigError(f"ai.scope.param_ranges: {pr.path} has min > max")
+    if cfg.fluvial.resolution_divisor not in (1, 2, 4):
+        raise ConfigError("fluvial.resolution_divisor must be 1, 2 or 4")
