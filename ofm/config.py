@@ -42,7 +42,7 @@ class TectonicsConfig:
     hill_wavelength: float = 820.0
     warp: float = 0.12
     basins_per_km2: float = 0.35
-    basin_radius: float = 260.0     # metres
+    basin_radius: float = 340.0     # metres
     basin_depth: float = 38.0       # metres
     belt_width: float = 0.11        # fraction of map size
 
@@ -80,7 +80,7 @@ class StrataConfig:
 
 @dataclass
 class ErosionConfig:
-    droplets_per_cell: float = 0.9
+    droplets_per_cell: float = 0.4  # the fluvial stage carves the valleys; droplets add gullies and fans
     batch: int = 4096
     max_steps: int = 64
     inertia: float = 0.05
@@ -107,15 +107,22 @@ class FluvialConfig:
     iterations: int = 24
     resolution_divisor: int = 2     # solve on a coarser grid, add the change back (1 = full res)
     dt_years: float = 20000.0
-    k_erosion: float = 6.0e-6       # erodibility for soft rock (scaled by 1 - hardness_effect * hardness)
+    k_erosion: float = 2.0e-5       # erodibility for soft rock (scaled by 1 - hardness_effect * hardness)
     m: float = 0.45                 # drainage-area exponent
     n: float = 1.0                  # slope exponent (implicit solver is exact for n = 1)
-    uplift_rate: float = 4.0e-4     # m/yr at full orogenic uplift
+    uplift_rate: float = 6.0e-5     # m/yr at full orogenic uplift
     diffusion: float = 0.01         # hillslope diffusivity (m^2/yr)
     deposition: float = 0.6         # dimensionless deposition coefficient G (0 = detachment-limited)
     hardness_effect: float = 0.8
     max_change: float = 220.0       # metres: cap on cumulative change (keeps game-scale relief)
     strength: float = 1.0           # blend of the evolved terrain into the input (0..1)
+    roughness: float = 1.5          # metres of initial white-noise perturbation (seeds channel initiation)
+    isostasy: float = 0.75          # fraction of regionally averaged erosion returned as isostatic rebound
+    flexure_m: float = 900.0        # metres: smoothing length of the isostatic (flexural) response
+    routing_exponent: float = 1.5   # stochastic D8: receiver drawn with p ~ slope^x (>= 50 = plain steepest descent)
+    fine_iterations: int = 4        # extra final time steps on the full-resolution grid (sharpens channels)
+    floodplain_m: float = 60.0      # metres: lateral spreading of deposited alluvium across valley floors
+    critical_slope: float = 0.5     # threshold hillslope gradient (x0.75 soft .. x1.25 hard rock); 0 = no landslides
 
 
 @dataclass
@@ -198,6 +205,16 @@ class HiresConfig:
     floodplains: bool = True        # flat alluvial floors along rivers
     floodplain_width_k: float = 3.0 # x channel width
     floodplain_flatten: float = 0.7
+    erosion_steps: int = 40         # droplet lifetime (export cells travelled)
+    scree_repose_deg: float = 34.0  # angle of repose of the upper apron
+    scree_face_deg: float = 48.0    # faces steeper than this shed debris
+    beach_berm_m: float = 2.5       # berm crest height above sea level
+    beach_dean_a: float = 0.1       # Dean shape factor A (m^1/3), ~0.1 for medium sand
+    platform_width_m: float = 40.0  # wave-cut platform width seaward of the cliff foot
+    platform_depth_m: float = 0.6   # platform depth at the cliff foot (m below sea level)
+    platform_slope_deg: float = 1.0 # seaward slope of the platform
+    floodplain_max_gradient: float = 0.12  # river gradient (m/m) above which no floodplain forms
+    floodplain_max_height_m: float = 6.0   # ground higher above the water is valley wall
 
 
 @dataclass

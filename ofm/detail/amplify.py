@@ -5,7 +5,10 @@ detail that depends on geology instead of uniform noise:
   * hard, steep rock gets sharp ridged detail; soil gets gentle undulation;
   * water surfaces and channels stay smooth;
   * steep slopes are terraced along the strata, so hard layers stand out as
-    vertical risers with benches on top (stair-step canyon walls).
+    vertical risers with benches on top (stair-step canyon walls);
+  * export-resolution landforms follow (``hires.refine``): fine droplet rills,
+    scree aprons, floodplains, beaches and shore platforms, then river
+    channels are kept open and the sea floor / lake beds below their water.
 The volumetric layer samples this same field, so terrain and meshes agree.
 """
 from __future__ import annotations
@@ -14,17 +17,23 @@ import numpy as np
 
 from ..grid import bicubic, bilinear, gradient, smoothstep
 from ..noise import Noise, derive_seed
+from .hires import refine
 
 
-def strata_terrace(h: np.ndarray, fold: np.ndarray, strata, weight: np.ndarray) -> np.ndarray:
+def strata_terrace(h: np.ndarray, fold: np.ndarray, strata, weight: np.ndarray,
+                   slope_tan: np.ndarray | None = None, spacing: float = 0.0) -> np.ndarray:
     bot, top = strata.layer_bounds(h, fold)
     idx = strata.layer_index(h, fold)
     thick = np.maximum(top - bot, 1e-3)
     u = np.clip((h - bot) / thick, 0.0, 1.0)
     hard = strata.hardness_table[idx]
     k = np.clip(1.0 - 0.8 * hard, 0.2, 1.0)            # riser fraction of the layer
+    if slope_tan is not None and spacing > 0.0:
+        # a riser spans k * thick / slope metres; keep it >= 1.5 cells so thin layers
+        # on steep ground do not alias into dotted stair-steps
+        k = np.maximum(k, np.clip(1.5 * spacing * slope_tan / thick, 0.0, 1.0))
     g = smoothstep(0.0, 1.0, np.clip(u / k, 0.0, 1.0))
-    g = np.where(k >= 0.95, u, g)
+    g = g + (u - g) * smoothstep(0.85, 1.0, k)          # thick risers fade to the plain slope
     terraced = bot + g * thick
     w = np.where(idx == strata.basement_index, 0.0, weight)
     return h + w * (terraced - h)
@@ -63,7 +72,10 @@ def amplify(world) -> tuple[np.ndarray, float]:
     h = base + detail * calm
 
     steep = smoothstep(28.0, 46.0, slope_deg) * calm
-    h = strata_terrace(h, fold, world.strata, steep * cc.terrace_strength)
+    h = strata_terrace(h, fold, world.strata, steep * cc.terrace_strength, np.hypot(gx, gy), spacing)
+
+    # export-resolution landforms: rills, scree, floodplains, beaches (detail/hires.py)
+    h = refine(world, h, fold, U, V, spacing)
 
     if world.lake_mask is not None and world.lake_mask.any():
         # Outside lakes use the terrain itself, which meets the lake level at the shore.
