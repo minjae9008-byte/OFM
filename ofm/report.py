@@ -97,6 +97,10 @@ def write_report(world, vol, out: Path, manifest: dict) -> None:
                   f"- 평균/90% 이벤트 간격: {m['mean_event_gap_s']:.0f}s / {m['p90_event_gap_s']:.0f}s",
                   f"- 분당 경험 이벤트: {m['events_per_minute']:.2f}, 시야 커버리지: {m['coverage_seen'] * 100:.0f}%",
                   f"- 랜드마크 가시 커버리지: {m['landmark_coverage'] * 100:.0f}%", ""]
+        lines += _profile_section(sim) + _statistics_section(sim)
+    terrain = world.evaluation.get("terrain") or {}
+    if terrain.get("score") is not None:
+        lines += _terrain_section(terrain)
     if review:
         src = review.get("source", "heuristic")
         lines += ["## AI 리뷰", "", f"- 평가 출처: `{src}`", f"- 목적함수: {review.get('objective', 0):.3f}", ""]
@@ -112,6 +116,9 @@ def write_report(world, vol, out: Path, manifest: dict) -> None:
                              f"{', ' + a['kind'] if a.get('kind') else ''})" for a in h.get("actions", []))
             lines.append(f"| {h['iteration']} | {'✔' if h['accepted'] else '✘'} | {h['objective']:.3f} | {acts or '-'} |")
         lines.append("")
+    audit = world.evaluation.get("ai_audit") or []
+    if audit:
+        lines += _audit_section(audit)
     if world.pois:
         lines += ["## 주요 장소", "", "| 이름 | 종류 | 지역 | 출처 |", "|---|---|---|---|"]
         for p in sorted(world.pois, key=lambda p: -p.importance)[:30]:
@@ -125,7 +132,72 @@ def write_report(world, vol, out: Path, manifest: dict) -> None:
     lines += ["## 소요 시간 (초)", "", "```", json.dumps(world.timings, indent=1), "```", ""]
     (out / "report.md").write_text("\n".join(lines), encoding="utf-8")
     report = {"simulation": sim, "review": review, "history": world.history, "volume": vol.stats,
-              "timings": world.timings}
+              "terrain": terrain, "ai_audit": audit, "timings": world.timings}
     (out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1,
                                                 default=lambda o: o.tolist() if isinstance(o, np.ndarray) else str(o)),
                                      encoding="utf-8")
+
+
+def _fmt(v) -> str:
+    if isinstance(v, float):
+        return f"{v:.2f}"
+    return str(v)
+
+
+def _profile_section(sim: dict) -> list[str]:
+    """Per-profile score breakdown, if the evaluation produced one."""
+    profiles = sim.get("profiles")
+    if not isinstance(profiles, dict) or not profiles:
+        return []
+    keys: list[str] = []
+    for row in profiles.values():
+        for k in (row.get("scores") or row):
+            if isinstance((row.get("scores") or row).get(k), (int, float)) and k not in keys:
+                keys.append(k)
+    keys = keys[:8]
+    lines = ["### 에이전트 프로필별", "", "| 프로필 | " + " | ".join(keys) + " |", "|---|" + "---|" * len(keys)]
+    for name, row in profiles.items():
+        vals = row.get("scores") or row
+        lines.append(f"| {name} | " + " | ".join(_fmt(vals.get(k, "")) for k in keys) + " |")
+    return lines + [""]
+
+
+def _statistics_section(sim: dict) -> list[str]:
+    """Monte Carlo statistics (mean, CI) for key metrics, if present."""
+    stats = sim.get("statistics")
+    if not isinstance(stats, dict) or not stats:
+        return []
+    lines = ["### 몬테카를로 통계", "", "| 지표 | 평균 | 표준편차 | 신뢰구간 |", "|---|---|---|---|"]
+    for name, st in stats.items():
+        if not isinstance(st, dict):
+            continue
+        ci = st.get("ci") or [st.get("ci_low"), st.get("ci_high")]
+        ci_txt = f"[{_fmt(ci[0])}, {_fmt(ci[1])}]" if ci and ci[0] is not None else "-"
+        lines.append(f"| {name} | {_fmt(st.get('mean', '-'))} | {_fmt(st.get('std', '-'))} | {ci_txt} |")
+    return lines + [""]
+
+
+def _terrain_section(terrain: dict) -> list[str]:
+    try:
+        from .quality.metrics import format_quality_markdown
+        return [format_quality_markdown(terrain, "ko"), ""]
+    except (ImportError, AttributeError, KeyError, TypeError):
+        lines = ["## 지형 품질", "", f"- 종합: {terrain['score']:.2f}/10", ""]
+        for k, v in (terrain.get("sub_scores") or {}).items():
+            lines.append(f"- {k}: {_fmt(v)}")
+        for f in terrain.get("flags") or []:
+            lines.append(f"- ⚠ {f}")
+        return lines + [""]
+
+
+def _audit_section(audit: list) -> list[str]:
+    lines = ["## AI 범위 감사 로그", "", "| 반복 | 액션 | 상태 | 사유 |", "|---|---|---|---|"]
+    for e in audit[:60]:
+        a = e.get("action") or {}
+        label = a.get("type", "?") if isinstance(a, dict) else str(a)
+        if isinstance(a, dict) and (a.get("region") or a.get("path")):
+            label += f"({a.get('region') or a.get('path')}{', ' + a['kind'] if a.get('kind') else ''})"
+        lines.append(f"| {e.get('iteration', '')} | {label} | {e.get('status', '')} | {str(e.get('reason', ''))[:80]} |")
+    if len(audit) > 60:
+        lines.append(f"| … | {len(audit) - 60}개 더 (report.json 참고) | | |")
+    return lines + [""]
