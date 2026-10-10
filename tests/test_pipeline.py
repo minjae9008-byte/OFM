@@ -75,6 +75,9 @@ def test_psychology_report(small_world):
     for k, v in sim["scores"].items():
         assert 0.0 <= v <= 10.0, k
     assert len(sim["regions"]) == 16
+    assert {"pacing", "exploration", "legibility", "orientation", "overall"} <= set(sim["scores"])
+    assert {"profiles", "statistics", "weights", "intensity_per_minute"} <= set(sim)
+    assert sim["metrics"]["agents"] == len(small_world.psych["agents"])
     assert small_world.psych["agents"]
     assert small_world.landmarks
     per = small_world.psych["perception"]

@@ -92,8 +92,10 @@ def t_quantile(p: float, dof: int) -> float:
             + (3 * z7 + 19 * z5 + 17 * z3 - 15 * z) / (384 * v ** 3))
 
 
-def summarize(values: Iterable[float], confidence: float = 0.9) -> dict:
-    """Mean, sample std and a two-sided confidence interval of the mean."""
+def summarize(values: Iterable[float], confidence: float = 0.9,
+              bounds: tuple[float | None, float | None] = (None, None)) -> dict:
+    """Mean, sample std and a two-sided confidence interval of the mean, clipped to
+    ``bounds`` (e.g. (0, 1) for fractions)."""
     xs = [float(x) for x in values if x is not None and math.isfinite(float(x))]
     n = len(xs)
     if n == 0:
@@ -103,8 +105,15 @@ def summarize(values: Iterable[float], confidence: float = 0.9) -> dict:
         return {"n": 1, "mean": mean, "std": 0.0, "ci_low": mean, "ci_high": mean}
     std = math.sqrt(sum((x - mean) ** 2 for x in xs) / (n - 1))
     half = t_quantile(0.5 + confidence / 2.0, n - 1) * std / math.sqrt(n)
-    return {"n": n, "mean": mean, "std": std, "ci_low": mean - half, "ci_high": mean + half}
+    lo, hi = mean - half, mean + half
+    if bounds[0] is not None:
+        lo = max(lo, bounds[0])
+    if bounds[1] is not None:
+        hi = min(hi, bounds[1])
+    return {"n": n, "mean": mean, "std": std, "ci_low": lo, "ci_high": hi}
 
 
 def rounded(d: dict, digits: int = 3) -> dict:
-    return {k: (round(v, digits) if isinstance(v, float) else v) for k, v in d.items()}
+    """Round floats (numpy scalars included) to plain Python floats for JSON output."""
+    return {k: (round(float(v), digits) if isinstance(v, (float, int)) and not isinstance(v, bool) else v)
+            for k, v in d.items()}
