@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..config import OFMConfig
-from ..grid import NEIGHBORS4, blur, normalize01, shifted, smoothstep
+from ..grid import NEIGHBORS4, blur, label, normalize01, shifted, smoothstep
 from ..noise import Noise, derive_seed
 
 
@@ -128,12 +128,22 @@ def simulate_tectonics(cfg: OFMConfig) -> TectonicResult:
 
 
 def carve_basins(height: np.ndarray, cfg: OFMConfig) -> np.ndarray:
-    """Closed depressions (grabens, cirques, kettle basins), applied after erosion.
+    """Closed depressions (tectonic sags, glacial and dammed valley basins), applied after erosion.
 
-    Each basin is lowered below the lowest point of its rim, so it is a true
-    closed depression; hydrology later decides whether it holds an open lake,
-    a saline terminal lake or a dry playa from its water balance.
+    Basins prefer broadly gentle ground (lowlands, plateaus, wide valley floors
+    after fluvial erosion) and are elongated along the local downslope (valley)
+    direction. The lake level is set just below the lower part of the
+    surrounding rim; a smooth bowl (zero at the rim) deepens the floor, so the
+    terrain keeps its texture and the shoreline follows the contours instead of
+    a carved crater. Where the rim is lower than the lake (the outlet valley) a
+    moraine/landslide dam with a 12 degree apron closes it, so every basin is a
+    true closed depression. Hydrology later decides from the water balance
+    whether a basin holds an open lake, a saline terminal lake or a dry playa.
+    Sites that would need a deep gouge or a high dam are skipped; on worlds
+    without any gentle site the least demanding one is still used (relaxed
+    limits) so every map keeps at least one basin.
     """
+    from ..grid import gradient
     from ..grid import slope as grid_slope
     tc, wc = cfg.tectonics, cfg.world
     rng = np.random.default_rng(derive_seed(wc.seed, "basins"))
@@ -145,8 +155,9 @@ def carve_basins(height: np.ndarray, cfg: OFMConfig) -> np.ndarray:
     n = int(round(tc.basins_per_km2 * area_km2))
     if n <= 0 or not land.any():
         return height
-    yy, xx = np.mgrid[0:size, 0:size].astype(np.float64)
-    s = blur(grid_slope(height, cell), 3.0)
+    # Broadly gentle ground at the basin scale.
+    s = blur(grid_slope(height, cell), max(3.0, 0.5 * tc.basin_radius / cell))
+    gx, gy = gradient(blur(height, 3.0), cell)
     margin = max(4, int(tc.basin_radius / cell * 1.5))
     inner = np.zeros_like(land)
     inner[margin:-margin, margin:-margin] = True
@@ -154,35 +165,64 @@ def carve_basins(height: np.ndarray, cfg: OFMConfig) -> np.ndarray:
     if cand.size == 0:
         return height
     weights = 1.0 / (0.05 + s.reshape(-1)[cand]) ** 2
-    picks = rng.choice(cand, size=min(n * 8, cand.size), replace=False, p=weights / weights.sum())
-    placed: list[tuple[float, float]] = []
-    out = height.copy()
+    picks = rng.choice(cand, size=min(n * 20, cand.size), replace=False, p=weights / weights.sum())
+    sites = []
     for c in picks:
-        if len(placed) >= n:
-            break
         j, i = divmod(int(c), size)
-        if any(np.hypot(i - pi, j - pj) < size * 0.12 for pi, pj in placed):
-            continue
-        radius = rng.uniform(tc.basin_radius * 0.6, tc.basin_radius * 1.3) / cell
-        depth = rng.uniform(0.5, 1.0) * tc.basin_depth
-        stretch = rng.uniform(0.6, 1.0)
-        ang = rng.uniform(0, np.pi)
+        sites.append((int(c), i, j,
+                      rng.uniform(tc.basin_radius * 0.6, tc.basin_radius * 1.3) / cell,   # radius (cells)
+                      rng.uniform(0.5, 1.0) * tc.basin_depth,                            # depth
+                      rng.uniform(0.55, 0.9),                                            # stretch
+                      float(np.arctan2(gy[j, i], gx[j, i])) + rng.normal(0.0, 0.35)))   # long axis
+
+    def dig(out, site, relax):
+        """Carve one basin into a window of ``out``; None if the site is unsuitable."""
+        c, i, j, radius, depth, stretch, ang = site
+        radius = radius / relax                       # relaxed pass: smaller basins on steep ground
+        half = int(np.ceil(2.0 * radius)) + 2
+        j0, j1, i0, i1 = max(0, j - half), min(size, j + half + 1), max(0, i - half), min(size, i + half + 1)
+        yy, xx = np.mgrid[j0:j1, i0:i1].astype(np.float64)
+        win = out[j0:j1, i0:i1]
         dx, dy = xx - i, yy - j
         ax = (dx * np.cos(ang) + dy * np.sin(ang)) / radius
         ay = (-dx * np.sin(ang) + dy * np.cos(ang)) / (radius * stretch)
         r = np.hypot(ax, ay) * (1.0 + 0.2 * noise.fbm2(xx / size * 9 + c, yy / size * 9, 3))
-        rim = (r > 1.0) & (r < 1.15)
-        if not rim.any():
-            continue
-        rim_min = float(out[rim].min())
-        if rim_min <= wc.sea_level + 2.0:
-            continue
-        # Bowl below the rim, then a gentle cone outside it so the uphill side
-        # becomes a shore slope rather than a cut wall.
-        inside = rim_min - 1.0 - depth * np.clip(1.0 - r * r, 0.0, None) ** 0.8
-        outside = rim_min - 1.0 + np.clip(r - 1.0, 0.0, None) * radius * cell * np.tan(np.radians(16.0))
-        target = np.where(r < 1.0, inside, outside)
-        blend = 1.0 - smoothstep(2.2, 3.0, r)
-        out = out + blend * (np.minimum(out, target) - out)
-        placed.append((i, j))
+        ring = (r > 1.05) & (r < 1.25)
+        if not ring.any():
+            return None
+        # Lake level just below the lower part of the rim, at most half the basin
+        # depth above the present floor (valley lakes back up the valley).
+        floor_z = float(out[j, i])
+        level = min(float(np.quantile(win[ring], 0.3)) - 0.5, floor_z + 0.5 * depth)
+        amp = max(0.0, floor_z - level) + 0.5 * depth
+        if level <= wc.sea_level + 2.0 or amp > 1.5 * relax * tc.basin_depth:
+            return None                  # too steep a site: the bowl would gouge the slope
+        # Smooth bowl (zero at the rim): the terrain keeps its texture and the
+        # shoreline follows the contour at the lake level.
+        dug = win - amp * np.clip(1.0 - r * r, 0.0, 1.0)
+        lab, _ = label((dug < level) & (r < 1.05), diagonal=True)
+        wet = lab == lab[j - j0, i - i0]
+        top = level + 1.5
+        if wet.sum() < 6 or top - float(win[ring].min()) > 1.5 * relax * tc.basin_depth:
+            return None                  # outlet gorge too deep to dam convincingly
+        # Dam only where the rim ring is lower than the lake, with a 12 degree apron.
+        apron = np.clip(np.abs(r - 1.15) - 0.1, 0.0, None) * radius * cell * np.tan(np.radians(12.0))
+        new = out.copy()
+        new[j0:j1, i0:i1] = np.where(~wet & (r > 0.9) & (r < 1.6), np.maximum(dug, top - apron), dug)
+        return new
+
+    placed: list[tuple[float, float]] = []
+    out = height.copy()
+    for relax in (1.0, 2.5):
+        for site in sites:
+            if len(placed) >= n:
+                break
+            if any(np.hypot(site[1] - pi, site[2] - pj) < size * 0.12 for pi, pj in placed):
+                continue
+            new = dig(out, site, relax)
+            if new is not None:
+                out = new
+                placed.append((site[1], site[2]))
+        if placed:
+            break
     return out

@@ -37,6 +37,24 @@ def _land_region(world, min_relief=40.0):
     return max(rows, key=lambda r: r["relief"])["region"]
 
 
+def _placeable_region(world, action):
+    """A land region where ``action`` finds a site without any policy (the test world is steep,
+    so not every region has walkable ground)."""
+    rng = np.random.default_rng(0)
+    rows = sorted(world.evaluation["simulation"]["regions"], key=lambda r: -r["relief"])
+    for r in rows:
+        if r["land_fraction"] < 0.5:
+            continue
+        probe = clone_world(world)
+        probe.psych = world.psych
+        try:
+            apply_action(probe, validate_action(dict(action, region=r["region"]), world.all_regions()), rng)
+        except ActionError:
+            continue
+        return r["region"]
+    pytest.skip(f"no region of the test world can host {action}")
+
+
 def _region_center(world, region):
     sj, si = world.region_slices(region)
     return (si.start + si.stop) / 2 * world.cell, (sj.start + sj.stop) / 2 * world.cell
@@ -287,7 +305,7 @@ def test_per_action_and_total_limits(small_world):
 
 def test_height_delta_cap_reverts_only_that_action(small_world, monkeypatch):
     w = _world(small_world, max_height_delta_m=1.0, protect_spawn_radius=0.0)
-    region = _land_region(w)
+    region = _placeable_region(w, {"type": "add_poi", "kind": "camp"})
     base = w.height_base.copy()
     proposal = [{"type": "raise_relief", "region": region, "amount": 0.6, "reason": "t"},
                 {"type": "add_poi", "region": region, "kind": "camp", "reason": "t"}]
