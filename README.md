@@ -24,8 +24,10 @@ OFM은 물리 시뮬레이션과 환경심리학 시뮬레이션으로 오픈월
 
 Python 3.11 이상이 필요하고, 의존성은 `numpy`, `Pillow` 두 개뿐입니다. 기본 프리셋(4.1 km × 4.1 km)은 AI 개선 3회를 포함해 약 1분 40초에 생성됩니다.
 
-| 지형·바이옴·POI | 동굴 단면(지층을 따라 진행하는 카르스트 통로) |
+| 하천 지형 진화 전(같은 시드) | 하천 지형 진화 + 프랙탈 해안 후 |
 |---|---|
+| ![before](docs/images/terrain_before.png) | ![after](docs/images/terrain_after.png) |
+| **지형·바이옴·POI** | **동굴 단면(석회암층을 따라 진행하는 카르스트 통로)** |
 | ![biome](docs/images/preview_biome.png) | ![cave](docs/images/cave_profile.png) |
 | **해식주(파식 노치 포함)** | **탐험 에이전트가 지루해한 경로** |
 | ![stack](docs/images/view_sea_stack.png) | ![boredom](docs/images/preview_boredom.png) |

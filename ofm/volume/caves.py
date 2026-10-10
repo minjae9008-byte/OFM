@@ -240,6 +240,9 @@ def simulate_caves(world) -> list[CaveSystem]:
     out_j, out_i = np.nonzero(outlet_ok)
     out_x, out_y = (out_i + 0.5) * cell, (out_j + 0.5) * cell
     out_h = h[out_j, out_i]
+    # Karst springs rise where the soluble rock meets the valley side (often at its contact
+    # with impermeable rock below), so outlets in soluble rock are strongly preferred.
+    out_sol = np.maximum(surf_sol[out_j, out_i], world.strata.solubility(h - 8.0)[out_j, out_i])
 
     systems: list[CaveSystem] = []
     used: list[tuple[float, float]] = []
@@ -257,7 +260,8 @@ def simulate_caves(world) -> list[CaveSystem]:
         ok = (d > 250.0) & (d < cc.search_radius) & (drop > 25.0)
         if not ok.any():
             continue
-        cost = np.where(ok, d / 600.0 - drop / 120.0 + rng.uniform(0, 0.6, d.shape), np.inf)
+        cost = np.where(ok, d / 600.0 - drop / 120.0 + 1.5 * (1.0 - out_sol) + rng.uniform(0, 0.6, d.shape),
+                        np.inf)
         k = int(np.argmin(cost))
         tx, ty = float(out_x[k]), float(out_y[k])
         tz = float(t.h(tx, ty)) - cc.tunnel_radius * 0.25
