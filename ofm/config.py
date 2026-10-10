@@ -229,17 +229,36 @@ class DetailConfig:
 
 
 @dataclass
+class QualityWeights:
+    """Weights of the terrain-quality sub-scores (normalised by their sum)."""
+    slope: float = 1.0
+    hypsometry: float = 0.6
+    drainage: float = 1.0
+    spectrum: float = 1.0
+    pits: float = 1.2
+    spikes: float = 1.2
+    grid_artifacts: float = 1.2
+    landforms: float = 0.8
+    coastline: float = 0.6
+
+
+@dataclass
 class QualityConfig:
     """Terrain quality analysis (geomorphometry). Bands are [low, high] ranges that
     score 10; values outside fall off smoothly."""
     enabled: bool = True
     slope_median_deg: list[float] = field(default_factory=lambda: [8.0, 26.0])
     hypsometric_integral: list[float] = field(default_factory=lambda: [0.2, 0.6])
-    drainage_density_km: list[float] = field(default_factory=lambda: [0.8, 5.0])   # km of river per km2
+    drainage_density_km: list[float] = field(default_factory=lambda: [0.4, 4.0])   # km of river per km2 (game-scale rivers)
     spectral_slope: list[float] = field(default_factory=lambda: [1.8, 3.4])        # radial power-spectrum exponent
     max_pit_fraction: float = 0.002     # closed depressions not explained by lakes
     max_spike_fraction: float = 0.001   # single-cell spikes / holes
     max_axis_artifact: float = 0.25     # anisotropy aligned with the grid axes
+    max_diagonal_artifact: float = 0.3  # anisotropy aligned with the grid diagonals (D8 lines)
+    coastline_dimension: list[float] = field(default_factory=lambda: [1.08, 1.35])  # box-counting dimension (natural ~1.1-1.3)
+    landform_entropy: list[float] = field(default_factory=lambda: [0.55, 1.0])      # normalised diversity of landforms
+    band_softness: float = 1.0          # falloff outside a band, in band widths (score 5 at one softness)
+    weights: QualityWeights = field(default_factory=QualityWeights)
 
 
 @dataclass
@@ -342,6 +361,7 @@ class EvaluationConfig:
     confidence: float = 0.9         # confidence level of reported intervals
     region_divs: int = 4            # region grid (A1..D4 for 4)
     orientation_lost_s: float = 90.0  # seconds with no landmark in view before an agent is lost
+    band_softness: float = 1.0      # falloff outside a target band, in band widths (score 5 at one softness)
     weights: ScoreWeights = field(default_factory=ScoreWeights)
     preference: PreferenceWeights = field(default_factory=PreferenceWeights)
     events: EventValues = field(default_factory=EventValues)
