@@ -318,6 +318,8 @@ def _sea_caves(world, t: _Terrain, rng, systems: list[CaveSystem]) -> list[CaveS
         z = sea + 2.5
         r = cfg.caves.tunnel_radius * rng.uniform(1.0, 1.5)
         start = np.array([x - d[0] * cell, y - d[1] * cell, z])
+        if not t.inside(start[0], start[1]):
+            continue
         segs = []
         pos = start.copy()
         length = rng.uniform(50.0, 130.0)
@@ -327,6 +329,8 @@ def _sea_caves(world, t: _Terrain, rng, systems: list[CaveSystem]) -> list[CaveS
             d = np.array([d[0] * c - d[1] * s, d[0] * s + d[1] * c])
             nxt = pos + np.array([d[0], d[1], rng.normal(0, 0.15)]) * cfg.caves.step
             nxt[2] = np.clip(nxt[2], sea + 1.5, sea + 5.0)
+            if not t.inside(nxt[0], nxt[1]):
+                break
             if float(t.h(nxt[0], nxt[1])) - nxt[2] < 6.0 and len(segs) > 2:
                 break
             segs.append([*pos, *nxt, r, r * 0.95])

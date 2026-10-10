@@ -181,10 +181,7 @@ def entropy01(fractions: dict[str, float]) -> float | None:
     return float(-(p * np.log(p)).sum() / math.log(len(fractions)))
 
 
-def coastline_dimension(ocean: np.ndarray) -> float | None:
-    """Box-counting dimension of the land/ocean boundary (boxes of 2 .. n/16 cells)."""
-    if not ocean.any() or ocean.all():
-        return None
+def _box_dimension(ocean: np.ndarray) -> float | None:
     coast = ocean & ~(shifted(ocean, 1, 0) & shifted(ocean, -1, 0) & shifted(ocean, 0, 1) & shifted(ocean, 0, -1))
     n = ocean.shape[0]
     sizes, counts = [], []
@@ -200,6 +197,25 @@ def coastline_dimension(ocean: np.ndarray) -> float | None:
         return None
     d, _ = np.polyfit(np.log(1.0 / np.array(sizes)), np.log(np.array(counts)), 1)
     return float(d)
+
+
+def coastline_dimension(ocean: np.ndarray, smooth_sigma: float = 4.0) -> float | None:
+    """Box-counting dimension of the land/ocean boundary, bias-corrected.
+
+    Raw box counting on a raster underestimates the dimension of oblique or
+    map-crossing coasts (constant per-box offsets dominate at coarse sizes), so
+    the same estimator is applied to a heavily smoothed copy of the coastline
+    and only the excess is kept: D = 1 + D(coast) - D(smoothed coast). A smooth
+    coast scores ~1.0 at any orientation; natural coasts ~1.1-1.3.
+    """
+    if not ocean.any() or ocean.all():
+        return None
+    raw = _box_dimension(ocean)
+    smooth = blur(ocean.astype(np.float64), smooth_sigma) > 0.5
+    if raw is None or not smooth.any() or smooth.all():
+        return raw
+    ref = _box_dimension(smooth)
+    return raw if ref is None else float(1.0 + raw - ref)
 
 
 def ruggedness(h: np.ndarray, land: np.ndarray) -> float | None:

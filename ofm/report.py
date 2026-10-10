@@ -13,6 +13,7 @@ from .volume.mesher import surface_nets
 SCORE_LABELS_KO = {
     "scenic": "경관 선호(Kaplan)", "variety": "다양성", "legibility": "랜드마크 가독성", "mystery": "미스터리",
     "pacing": "페이싱", "exploration": "탐험", "prospect_refuge": "조망-피신", "overall": "종합",
+    "orientation": "방향 감각(길 잃음·되돌아감)", "terrain_quality": "지형 품질",
 }
 
 
@@ -118,7 +119,7 @@ def write_report(world, vol, out: Path, manifest: dict) -> None:
         lines.append("")
     audit = world.evaluation.get("ai_audit") or []
     if audit:
-        lines += _audit_section(audit)
+        lines += _audit_section(audit, world.evaluation.get("ai_scope"))
     if world.pois:
         lines += ["## 주요 장소", "", "| 이름 | 종류 | 지역 | 출처 |", "|---|---|---|---|"]
         for p in sorted(world.pois, key=lambda p: -p.importance)[:30]:
@@ -190,14 +191,36 @@ def _terrain_section(terrain: dict) -> list[str]:
         return lines + [""]
 
 
-def _audit_section(audit: list) -> list[str]:
-    lines = ["## AI 범위 감사 로그", "", "| 반복 | 액션 | 상태 | 사유 |", "|---|---|---|---|"]
+STATUS_KO = {"applied": "적용", "rejected": "거절", "reverted": "되돌림", "dry_run": "모의 실행"}
+STAGE_KO = {"apply": "적용 단계", "review": "제안 검토"}
+
+
+def _audit_section(audit: list, scope: dict | None = None) -> list[str]:
+    lines = ["## AI 범위 감사 로그", ""]
+    if scope:
+        allowed = ", ".join(scope.get("allowed_actions", []) or []) or "-"
+        lines += [f"- 허용 액션: {allowed}"]
+        if scope.get("allowed_regions"):
+            lines.append(f"- 허용 지역: {', '.join(scope['allowed_regions'])}")
+        if scope.get("protected_zones"):
+            lines.append(f"- 보호 구역: {len(scope['protected_zones'])}곳")
+        budget = scope.get("llm_budget") or {}
+        if budget:
+            lines.append(f"- LLM 호출: {budget.get('calls', 0)}/{budget.get('max_calls', '-')}, "
+                         f"{float(budget.get('seconds', 0.0)):.0f}s/{budget.get('max_seconds', '-')}s")
+        lines.append("")
+    lines += ["| 반복 | 단계 | 액션 | 상태 | 사유 |", "|---|---|---|---|---|"]
     for e in audit[:60]:
         a = e.get("action") or {}
-        label = a.get("type", "?") if isinstance(a, dict) else str(a)
+        label = a.get("type", "") if isinstance(a, dict) else str(a)
+        if not label:
+            label = "(형식 오류 제안)"
         if isinstance(a, dict) and (a.get("region") or a.get("path")):
             label += f"({a.get('region') or a.get('path')}{', ' + a['kind'] if a.get('kind') else ''})"
-        lines.append(f"| {e.get('iteration', '')} | {label} | {e.get('status', '')} | {str(e.get('reason', ''))[:80]} |")
+        stage = STAGE_KO.get(e.get("stage", "apply"), e.get("stage", ""))
+        status = STATUS_KO.get(e.get("status", ""), e.get("status", ""))
+        reason = str(e.get("reason", "")).replace("|", "/")[:90]
+        lines.append(f"| {e.get('iteration', '')} | {stage} | {label} | {status} | {reason} |")
     if len(audit) > 60:
         lines.append(f"| … | {len(audit) - 60}개 더 (report.json 참고) | | |")
     return lines + [""]

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..config import OFMConfig
-from ..grid import NEIGHBORS4, blur, label, normalize01, shifted, smoothstep
+from ..grid import bilinear, NEIGHBORS4, blur, label, normalize01, shifted, smoothstep
 from ..noise import Noise, derive_seed
 
 
@@ -116,6 +116,18 @@ def simulate_tectonics(cfg: OFMConfig) -> TectonicResult:
     else:
         q = np.quantile(height, 1.0 - wc.land_fraction)
         height = height - q + wc.sea_level
+        if tc.coast_roughness > 0:
+            # Fractal domain warp in a band around sea level: the shoreline is displaced
+            # horizontally at every scale of the fBm, carving bays, headlands and islets
+            # (natural coastlines have a box-counting dimension of ~1.1-1.3; the smooth
+            # continental falloff alone gives ~1.0). Inland relief is left untouched.
+            f = size * wc.cell_size / max(tc.coast_wavelength, 1.0)
+            disp = tc.coast_roughness / wc.cell_size
+            wx = noise.fbm2(u * f + 13.7, v * f - 5.1, 7, gain=0.62)
+            wy = noise.fbm2(u * f - 41.2, v * f + 22.8, 7, gain=0.62)
+            warped = bilinear(height, xx + wx * disp, yy + wy * disp)
+            near = np.exp(-np.abs(height - wc.sea_level) / max(tc.coast_band, 1.0))
+            height = height + near * (warped - height)
     # Keep the sea floor shallow enough for gameplay shores.
     height = np.where(height < wc.sea_level, wc.sea_level + (height - wc.sea_level) * 0.55, height)
 

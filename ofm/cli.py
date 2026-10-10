@@ -48,7 +48,6 @@ def list_presets() -> list[str]:
 
 def cmd_generate(args) -> int:
     from .ai.director import run_director
-    from .ai.evaluator import review
     from .ai.llm import LocalLLM
     from .ai.lore import generate_lore
     from .export.exporter import export_world
@@ -85,12 +84,9 @@ def cmd_generate(args) -> int:
     st = llm.status()
     say(f"local AI: {st.provider} {st.model} @ {st.base_url} -> "
         f"{'available' if st.available else 'unavailable (' + st.detail + '), using heuristics'}")
-    if cfg.ai.iterations > 0:
-        world = run_director(world, llm, progress=say)
-    else:
-        r = review(world, llm)
-        world.evaluation["review"] = {k: v for k, v in r.items() if k != "actions"}
-        world.evaluation["pending_actions"] = r["actions"]
+    # iterations = 0 still runs the director: it reviews, audits and records the scope
+    # summary without applying anything
+    world = run_director(world, llm, progress=say)
     say("lore / names")
     generate_lore(world, llm)
     say("volumetric meshing")
