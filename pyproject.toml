@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ofm"
+version = "0.1.0"
+description = "Simulation-driven open-world map generator (physics + environmental psychology + local AI) for Unity and Unreal"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.24", "pillow>=9.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+ofm = "ofm.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["ofm*"]
+
+[tool.setuptools.package-data]
+"ofm.presets" = ["*.toml"]
+"ofm.engines" = ["unity/Editor/*.cs", "unity/Runtime/*.cs", "unity/Shaders/*.shader", "unreal/*.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

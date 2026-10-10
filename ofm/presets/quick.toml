@@ -1,0 +1,17 @@
+# Small and fast: for tests and trying parameters (~2 km, a few seconds).
+[world]
+name = "quick"
+seed = 7
+size = 128
+cell_size = 16.0
+
+[erosion]
+droplets_per_cell = 0.6
+
+[psych]
+grid = 32
+agents = 4
+agent_minutes = 10.0
+
+[ai]
+iterations = 1

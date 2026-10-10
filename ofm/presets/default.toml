@@ -1,0 +1,13 @@
+# Temperate island continent, ~4 km x 4 km. Every key is optional; see ofm/config.py for all of them.
+[world]
+name = "verdant_isle"
+seed = 1337
+size = 256
+cell_size = 16.0
+shape = "continent"
+
+[ai]
+provider = "auto"        # auto | ollama | openai | none
+model = "llama3.1:8b"
+iterations = 3
+language = "ko"

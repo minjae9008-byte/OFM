@@ -1,0 +1,21 @@
+# Warm island chain: sea cliffs, sea caves and stacks, wet windward slopes, dry lee sides.
+[world]
+name = "sunken_chain"
+seed = 99
+size = 256
+cell_size = 16.0
+shape = "archipelago"
+land_fraction = 0.42
+
+[tectonics]
+mountain_height = 520.0
+hill_amplitude = 70.0
+
+[climate]
+latitude_south = 12.0
+latitude_north = 20.0
+wind_from_deg = 80.0
+
+[cliffs]
+notch_depth = 8.0
+undercut_depth = 8.0

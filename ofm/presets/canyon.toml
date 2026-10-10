@@ -1,0 +1,52 @@
+# Arid plateau: hard sandstone caprock over soft shale gives mesas, buttes, hoodoos and stepped canyons.
+[world]
+name = "red_mesa"
+seed = 2024
+size = 256
+cell_size = 16.0
+shape = "inland"
+
+[tectonics]
+mountain_height = 420.0
+hill_amplitude = 60.0
+basins_per_km2 = 0.15
+
+[climate]
+latitude_south = 30.0
+latitude_north = 36.0
+background_mm = 120.0
+precip_scale = 700.0
+
+[erosion]
+hardness_effect = 0.95
+hard_talus_deg = 78.0
+
+[cliffs]
+terrace_strength = 1.0
+undercut_depth = 9.0
+cliff_slope_deg = 46.0
+
+[strata]
+fold_factor = 0.3
+dip = 0.004
+
+[[strata.layers]]
+name = "sandstone"
+thickness = 34.0
+hardness = 0.88
+solubility = 0.05
+color = [196, 120, 80]
+
+[[strata.layers]]
+name = "shale"
+thickness = 26.0
+hardness = 0.15
+solubility = 0.05
+color = [150, 96, 78]
+
+[[strata.layers]]
+name = "limestone"
+thickness = 30.0
+hardness = 0.6
+solubility = 0.85
+color = [206, 180, 150]

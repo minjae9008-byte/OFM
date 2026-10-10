@@ -1,0 +1,46 @@
+# High, cold mountains: glaciers on the summits, deep karst under limestone ridges.
+[world]
+name = "alpine_reach"
+seed = 4242
+size = 256
+cell_size = 20.0
+shape = "inland"
+
+[tectonics]
+plates = 6
+mountain_height = 1500.0
+ridge_wavelength = 3200.0
+hill_amplitude = 120.0
+basins_per_km2 = 0.25
+
+[climate]
+latitude_south = 52.0
+latitude_north = 62.0
+precip_scale = 2600.0
+
+[caves]
+density = 1.4
+
+[strata]
+fold_factor = 1.15
+
+[[strata.layers]]
+name = "limestone"
+thickness = 90.0
+hardness = 0.72
+solubility = 0.95
+color = [205, 200, 186]
+
+[[strata.layers]]
+name = "marl"
+thickness = 25.0
+hardness = 0.3
+solubility = 0.4
+color = [150, 140, 120]
+
+[[strata.layers]]
+name = "dolomite"
+thickness = 60.0
+hardness = 0.78
+solubility = 0.6
+color = [176, 170, 156]
