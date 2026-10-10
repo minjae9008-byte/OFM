@@ -1,0 +1,57 @@
+# Example: a designer-tuned evaluation. Strict pacing targets, more Monte Carlo runs,
+# custom play-tester profiles and a finer 6 x 6 region grid for the AI reviewer.
+[world]
+name = "tuned_isle"
+seed = 1337
+
+[evaluation]
+runs = 3
+confidence = 0.9
+region_divs = 6
+orientation_lost_s = 75.0
+
+[evaluation.weights]
+scenic = 0.12
+variety = 0.12
+legibility = 0.14
+mystery = 0.14
+pacing = 0.22
+exploration = 0.1
+prospect_refuge = 0.08
+orientation = 0.04
+terrain_quality = 0.04
+
+[evaluation.targets]
+event_gap_s = [15.0, 45.0]
+bored_fraction = [0.0, 0.1]
+discoveries_per_hour = [25.0, 50.0]
+
+[evaluation.events]
+vista = 0.6
+cave_entered = 1.0
+
+[[evaluation.profiles]]
+name = "explorer"
+count = 3
+poi = 0.6
+landmark = 0.7
+frontier = 1.5
+
+[[evaluation.profiles]]
+name = "completionist"
+count = 2
+poi = 1.8
+landmark = 0.8
+frontier = 0.4
+risk_aversion = 0.5
+
+[[evaluation.profiles]]
+name = "casual"
+count = 3
+poi = 0.9
+landmark = 1.2
+frontier = 0.6
+speed = 0.8
+stamina_s = 150.0
+fatigue_slowdown = 0.45
+risk_aversion = 0.8

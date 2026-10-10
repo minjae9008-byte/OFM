@@ -1,0 +1,39 @@
+# Example: the local model works inside a tight sandbox.
+# It may only add points of interest, landmarks and caves in the eastern half of the map,
+# never touches the hand-authored start town, and every terrain change is capped.
+[world]
+name = "scoped_isle"
+seed = 1337
+
+[ai]
+provider = "auto"
+model = "llama3.1:8b"
+iterations = 4
+language = "ko"
+
+[ai.scope]
+allowed_actions = ["add_poi", "add_landmark", "add_cave"]
+max_actions_per_iteration = 3
+max_total_actions = 10
+allowed_regions = ["A3", "A4", "B3", "B4", "C3", "C4", "D3", "D4"]
+protect_spawn_radius = 400.0
+max_height_delta_m = 30.0
+max_total_height_delta_m = 60.0
+max_modified_area_fraction = 0.05
+max_llm_calls = 10
+max_llm_seconds = 600.0
+retries = 2
+samples = 3                 # three independent reviews, majority vote on actions
+json_schema = true
+min_objective_gain = 0.02
+
+[ai.scope.limits]
+add_poi = 6
+add_landmark = 2
+add_cave = 2
+
+[[ai.scope.protected_zones]]
+x = 1200.0
+y = 900.0
+radius = 300.0
+reason = "hand-authored harbour town"
