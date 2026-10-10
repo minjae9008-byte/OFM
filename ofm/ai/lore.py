@@ -4,6 +4,12 @@ With a local LLM the names are written in context (biome, geology, what the
 agents experienced there). Without one, a procedural generator composes
 pronounceable names (Hangul syllable composition for Korean, syllable chains
 for English) with a feature-type suffix.
+
+LLM naming runs inside the same budget as the director (``ai.scope``
+``max_llm_calls`` / ``max_llm_seconds``): items are sent in chunks that fit
+``max_prompt_chars``, each with a JSON schema listing the expected ids, and
+naming stops as soon as the budget is spent; whatever is left gets
+procedural names.
 """
 from __future__ import annotations
 
@@ -14,6 +20,7 @@ import numpy as np
 from ..noise import derive_seed
 from ..world import World
 from .llm import LocalLLM
+from .schema import lore_schema
 
 # Curated syllables that read naturally in Korean place names.
 _KO_SYLLABLES = list("가강건경고곡구금기나남노단담도동라란령로류리마명묘무문미바백벽보봉비"
@@ -63,12 +70,12 @@ class NameGen:
 
 
 def _items(world: World) -> list[dict]:
-    regions = {r["region"]: r for r in world.evaluation.get("simulation", {}).get("regions", [])}
+    regions = {r["region"]: r for r in world.evaluation.get("simulation", {}).get("regions", []) if "region" in r}
     items = []
     for rid, r in regions.items():
-        if r["land_fraction"] > 0.2:
-            items.append({"id": f"region:{rid}", "kind": "region", "biomes": r["biomes"],
-                          "relief_m": r["relief"], "pois": r["pois"][:5]})
+        if r.get("land_fraction", 0.0) > 0.2:
+            items.append({"id": f"region:{rid}", "kind": "region", "biomes": r.get("biomes", []),
+                          "relief_m": r.get("relief", 0.0), "pois": list(r.get("pois", []))[:5]})
     for lm in world.landmarks:
         items.append({"id": f"landmark:{lm.id}", "kind": lm.kind, "region": world.region_of(lm.x, lm.y),
                       "height_m": round(lm.height)})
@@ -84,20 +91,43 @@ def _items(world: World) -> list[dict]:
     return items
 
 
+def _chunks(items: list[dict], max_chars: int, max_items: int = 40) -> list[list[dict]]:
+    """Split items so each request stays under ``max_chars`` (and ``max_items``)."""
+    out: list[list[dict]] = []
+    cur: list[dict] = []
+    size = 16
+    for it in items:
+        n = len(json.dumps(it, ensure_ascii=False)) + 1
+        if cur and (size + n > max_chars or len(cur) >= max_items):
+            out.append(cur)
+            cur, size = [], 16
+        cur.append(it)
+        size += n
+    if cur:
+        out.append(cur)
+    return out
+
+
 def generate_lore(world: World, llm: LocalLLM | None) -> dict:
     lang = world.cfg.ai.language
     gen = NameGen(world.cfg.world.seed, lang)
     items = _items(world)
     named: dict[str, dict] = {}
     source = "procedural"
+    skipped = ""
     if llm is not None and llm.available and items:
         lang_name = {"ko": "Korean", "en": "English", "ja": "Japanese"}.get(lang, lang)
         system = ("You name places in a fantasy open world. Names must be evocative, consistent in style and "
                   "unique. Reply with ONE JSON object mapping each id to {\"name\": ..., \"description\": ...}. "
                   f"Write names and one-sentence descriptions in {lang_name}.")
-        for start in range(0, len(items), 40):
-            chunk = items[start:start + 40]
-            raw = llm.chat_json(system, json.dumps({"items": chunk}, ensure_ascii=False))
+        for chunk in _chunks(items, llm.prompt_char_budget(system)):
+            if llm.budget_exhausted:
+                skipped = llm.budget_status()["reason"]
+                break
+            schema = lore_schema([it["id"] for it in chunk]) if llm.scope.json_schema else None
+            raw = llm.chat_json(system, json.dumps({"items": chunk}, ensure_ascii=False), schema=schema,
+                                seed=derive_seed(world.cfg.world.seed, "lore", llm.calls), name="ofm_names",
+                                retries=min(1, llm.scope.retries))
             if not raw:
                 continue
             table = raw.get("items", raw) if isinstance(raw.get("items", raw), dict) else raw
@@ -140,6 +170,7 @@ def generate_lore(world: World, llm: LocalLLM | None) -> dict:
     world.lore = {
         "source": source,
         "language": lang,
+        "llm_skipped": skipped,
         "regions": {k.split(":", 1)[1]: v for k, v in named.items() if k.startswith("region:")},
     }
     return world.lore
