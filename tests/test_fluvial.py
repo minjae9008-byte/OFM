@@ -221,12 +221,19 @@ def test_inland_border_follows_incision():
     assert (steps[True] > 8.0).sum() <= (steps[False] > 8.0).sum() + 2
 
 
-def test_coastal_warp_does_not_alias():
-    cfg = small_config(**{"world.size": 128, "world.shape": "coast", "world.seed": 7})
-    h = simulate_tectonics(cfg).height
-    rough = simulate_tectonics(small_config(**{"world.size": 128, "world.shape": "coast", "world.seed": 7,
-                                                "tectonics.coast_roughness": 0.0})).height
-    assert ocean_mask(h, 0.0).sum() != ocean_mask(rough, 0.0).sum()     # the warp is active
-    # with the octaves above the grid's Nyquist limit this coast had 24-32 one-cell spikes
-    # and pits (> 3 m); the resolvable octaves leave the fold-over ones only (12-15)
-    assert _spikes(h) <= 20 + _spikes(rough)
+def test_coastal_warp_does_not_alias(monkeypatch):
+    # octaves above the grid's Nyquist limit alias into one-cell spikes and pits on the shore;
+    # the warp keeps only the octaves the grid resolves (compare with all 7 at the same roughness)
+    from ofm import noise as noise_mod
+    over = {"world.size": 128, "world.shape": "coast", "world.seed": 7}
+    h = simulate_tectonics(small_config(**over)).height
+    smooth = simulate_tectonics(small_config(**dict(over, **{"tectonics.coast_roughness": 0.0}))).height
+    assert ocean_mask(h, 0.0).sum() != ocean_mask(smooth, 0.0).sum()     # the warp is active
+    orig = noise_mod.Noise.fbm2
+
+    def all_octaves(self, x, y, octaves=5, lacunarity=2.0, gain=0.5):
+        return orig(self, x, y, 7 if gain == 0.62 else octaves, lacunarity, gain)
+
+    monkeypatch.setattr(noise_mod.Noise, "fbm2", all_octaves)
+    aliased = simulate_tectonics(small_config(**over)).height
+    assert _spikes(h) - _spikes(smooth) < 0.75 * (_spikes(aliased) - _spikes(smooth))

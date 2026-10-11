@@ -46,7 +46,7 @@ class TectonicsConfig:
     basins_per_km2: float = 0.35
     basin_radius: float = 340.0     # metres
     basin_depth: float = 38.0       # metres
-    coast_roughness: float = 400.0  # metres of fractal horizontal shoreline displacement (bays, headlands); 0 = off
+    coast_roughness: float = 550.0  # metres of fractal horizontal shoreline displacement (bays, headlands); 0 = off
     coast_wavelength: float = 300.0 # metres: base wavelength of the shoreline warp
     coast_band: float = 80.0        # metres above/below sea level over which the warp fades out
     belt_width: float = 0.11        # fraction of map size
