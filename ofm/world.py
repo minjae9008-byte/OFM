@@ -92,6 +92,9 @@ class World:
     scatter: dict[str, np.ndarray] = field(default_factory=dict)
     pois: list[POI] = field(default_factory=list)
     landmarks: list[Landmark] = field(default_factory=list)
+    # where the play-test agents start (x, y in metres): fixed at the first evaluation so every
+    # candidate of the AI director is played from the same place
+    spawn: list[float] | None = None
     # psychology
     psych: dict[str, Any] = field(default_factory=dict)
     evaluation: dict[str, Any] = field(default_factory=dict)

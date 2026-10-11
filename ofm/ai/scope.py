@@ -555,6 +555,12 @@ class RebuildGuard:
         def inside(o) -> bool:
             return bool(pol.in_forbidden(o.x, o.y)[0])
 
+        if not _same_objects([p for p in cand.pois if inside(p)], [p for p in ref.pois if inside(p)]):
+            self._restore_pois(cand, inside)
+        self._restore_scatter(cand)
+
+    def _restore_pois(self, cand: World, inside) -> None:
+        ref = self.ref
         pois = [self._remap_poi(copy.deepcopy(p), cand) for p in ref.pois if inside(p)]
         pois += [p for p in cand.pois if not inside(p)]
         sp = next((p for p in ref.pois if p.kind == "settlement"), None)
@@ -566,6 +572,19 @@ class RebuildGuard:
         for k, p in enumerate(pois):
             p.id = f"poi_{k}"
         cand.pois = pois
+
+    def _restore_scatter(self, cand: World) -> None:
+        pol, ref = self.policy, self.ref
+        same = True
+        for kind in set(cand.scatter) | set(ref.scatter):
+            a, b = cand.scatter.get(kind), ref.scatter.get(kind)
+            a = a[pol.in_forbidden(a[:, 0], a[:, 1])] if a is not None and len(a) else np.zeros((0, 5))
+            b = b[pol.in_forbidden(b[:, 0], b[:, 1])] if b is not None and len(b) else np.zeros((0, 5))
+            if a.shape != b.shape or not np.array_equal(a, b):
+                same = False
+                break
+        if same:
+            return                             # keep the rebuilt arrays (and their order)
         scatter = {}
         for kind in sorted(set(cand.scatter) | set(ref.scatter)):
             parts = []
@@ -586,6 +605,8 @@ class RebuildGuard:
         kept = [c for c in cand.caves if not pol._touches(c)]
         if not restored and len(kept) == len(cand.caves):
             return
+        if _same_caves([c for c in cand.caves if pol._touches(c)], restored):
+            return                             # nothing to change: keep ids and order as rebuilt
         for c in restored:
             # passages outside the protected cells may now lie under edited ground: they must
             # keep their cover (or, if they had less, not lose any), else the rebuild fails
@@ -601,7 +622,7 @@ class RebuildGuard:
                     n += 1
                 c.id = f"cave_{n}"
             used.add(c.id)
-        cand.caves = kept + restored
+        cand.caves = sorted(kept + restored, key=lambda c: _id_key(c.id))
 
     def _check_cover(self, cave, cand: World, ref: World, min_cover: float = 1.0) -> None:
         seg = np.asarray(cave.segments)
@@ -641,14 +662,18 @@ class RebuildGuard:
                                                 for r in restored if r.source == "procedural"):
                 continue                       # crowds a restored feature (procedural spacing)
             kept.append(f)
+        inside_cand = [f for f in cand.features if inside(f)]
+        if len(kept) + len(inside_cand) == len(cand.features) and _same_objects(inside_cand, restored):
+            return                             # nothing to change: keep ids and order as rebuilt
         used = {f.id for f in restored}
-        n = 0
         for f in kept:
-            while f"feature_{n}" in used:
-                n += 1
-            f.id = f"feature_{n}"
+            if f.id in used:                   # renumber only on a clash with a restored id
+                n = 0
+                while f"feature_{n}" in used or any(k is not f and k.id == f"feature_{n}" for k in kept):
+                    n += 1
+                f.id = f"feature_{n}"
             used.add(f.id)
-        cand.features = kept + restored
+        cand.features = sorted(kept + restored, key=lambda f: _id_key(f.id))
 
     def _remap_poi(self, p, cand: World):
         """Point a restored POI's lake / waterfall reference at the candidate's object there."""
@@ -664,3 +689,21 @@ class RebuildGuard:
             if np.hypot(best["x"] - p.x, best["y"] - p.y) < self.policy.cell:
                 p.props = [best["id"]] + list(p.props[1:])
         return p
+
+
+def _id_key(ident: str) -> tuple:
+    """Sort key for ids like 'cave_3', 'cave_ai_5', 'feature_12': prefix, then the number."""
+    head, _, tail = str(ident).rpartition("_")
+    return (head, int(tail)) if tail.isdigit() else (str(ident), -1)
+
+
+def _same_objects(a: list, b: list) -> bool:
+    key = lambda o: (o.kind, round(float(o.x), 3), round(float(o.y), 3))   # noqa: E731
+    return sorted(map(key, a)) == sorted(map(key, b))
+
+
+def _same_caves(a: list, b: list) -> bool:
+    def key(c):
+        seg = np.asarray(c.segments)
+        return (c.id, c.kind, seg.shape, round(float(seg.sum()), 3) if seg.size else 0.0)
+    return sorted(map(key, a)) == sorted(map(key, b))

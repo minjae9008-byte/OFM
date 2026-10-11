@@ -174,12 +174,13 @@ def evaluate_psychology(world: World) -> dict:
     run_groups = [[l for l in logs if l.run == r] for r in range(sim.get("runs", 1))]
     run_overall = [score_group(g)[0]["overall"] for g in run_groups if g and sum(l.duration for l in g) > 0]
     conf = ev.confidence
+    played = [l for l in logs if l.duration > 0]          # agents that never moved measured nothing
     per_agent = {
-        "bored_fraction": [l.bored_fraction for l in logs],
-        "mean_event_gap_s": [float(np.mean(l.gaps)) for l in logs if l.gaps],
-        "discoveries_per_agent_hour": [l.discoveries / (l.duration / 3600.0) for l in logs if l.duration > 0],
-        "lost_fraction": [l.lost_fraction for l in logs],
-        "backtrack_ratio": [l.backtrack_ratio for l in logs],
+        "bored_fraction": [l.bored_fraction for l in played],
+        "mean_event_gap_s": [float(np.mean(l.gaps)) for l in played if l.gaps],
+        "discoveries_per_agent_hour": [l.discoveries / (l.duration / 3600.0) for l in played],
+        "lost_fraction": [l.lost_fraction for l in played],
+        "backtrack_ratio": [l.backtrack_ratio for l in played],
     }
     fractions = {"bored_fraction", "lost_fraction", "backtrack_ratio"}
     statistics = {k: rounded(summarize(v, conf, (0.0, 1.0) if k in fractions else (0.0, None)), 4)

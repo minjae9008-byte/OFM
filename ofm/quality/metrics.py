@@ -122,17 +122,18 @@ def grid_alignment(h: np.ndarray, spacing: float, land: np.ndarray,
     direction distribution concentrated around one axis (wrapped normal) it is exactly
     ``m2^2 |m2|^2``. Only the excess over that is attributed to the grid, so ridges in
     any direction and a tilted plane score 0. Re(excess) > 0: aligned with the axes,
-    < 0: with the diagonals. A border strip of 3 sigma is ignored: the edge-padded blur
-    leaves axis-aligned detail there on any sloping map."""
+    < 0: with the diagonals. A border strip of 3 sigma + 2 cells is ignored: the edge-padded
+    blur leaves axis-aligned detail there on any sloping map."""
     detail = h - blur(h, sigma)
     gy, gx = np.gradient(detail, spacing)
     w = np.hypot(gx, gy) * land
-    b = int(np.ceil(3.0 * sigma))
+    b = int(np.ceil(3.0 * sigma)) + 2      # blur support (three box passes) + the gradient stencil
     if min(h.shape) > 4 * b:
         w[:b, :] = w[-b:, :] = 0.0
         w[:, :b] = w[:, -b:] = 0.0
     total = w.sum()
-    if total <= 1e-12:
+    # no detail at all (a plane, a paraboloid): the directions would be round-off noise
+    if total <= 1e-9 * max(1, int(np.count_nonzero(w))):
         return None, None
     theta = np.arctan2(gy, gx)
     m2 = complex((w * np.exp(2j * theta)).sum() / total)
@@ -210,7 +211,7 @@ def landform_fractions(h: np.ndarray, cell: float, land: np.ndarray, radius_m: f
     n0, n1 = h.shape
     L = max(2, int(round(radius_m / cell)))
     pad = np.pad(h.astype(np.float64), L, mode="constant", constant_values=np.nan)
-    t = np.tan(np.radians(flat_deg))
+    t = np.radians(flat_deg)
     plus = np.zeros(h.shape, dtype=np.int16)
     minus = np.zeros(h.shape, dtype=np.int16)
     for dy, dx in NEIGHBORS8:
@@ -224,8 +225,8 @@ def landform_fractions(h: np.ndarray, cell: float, land: np.ndarray, radius_m: f
             hi = np.where(ok, np.maximum(hi, ang), hi)
             lo = np.where(ok, np.minimum(lo, ang), lo)
         seen = np.isfinite(hi)
-        zen = np.where(seen, hi, 0.0)                 # strongest rise in this direction
-        nad = np.where(seen, -lo, 0.0)                # strongest drop
+        zen = np.arctan(np.where(seen, hi, 0.0))      # largest elevation angle (strongest rise)
+        nad = np.arctan(np.where(seen, -lo, 0.0))     # largest depression angle (strongest drop)
         plus += (zen - nad > t)
         minus += (nad - zen > t)
     code = {k: i for i, k in enumerate(LANDFORMS)}

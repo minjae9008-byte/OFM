@@ -122,3 +122,38 @@ def test_non_finite_terrain_is_an_error(monkeypatch):
     monkeypatch.setattr(P, "carve_basins", lambda h, cfg: np.where(h > 0, np.nan, h))
     with pytest.raises(ConfigError, match="non-finite"):
         P.generate_base(small_config())
+
+
+@pytest.mark.parametrize("shape,want", [("cone", "peak"), ("bowl", "pit"), ("valley", "valley"),
+                                        ("ridge", "ridge"), ("plane", "slope"), ("flat", "flat"),
+                                        ("gentle", "flat")])
+def test_geomorphons_classify_basic_shapes(shape, want):
+    n, cell = 129, 16.0
+    yy, xx = (np.mgrid[0:n, 0:n] - n // 2) * cell
+    r = np.hypot(xx, yy)
+    h = {"cone": 500 - 0.5 * r, "bowl": 0.5 * r, "valley": 0.3 * np.abs(xx) + 0.05 * yy,
+         "ridge": 300 - 0.3 * np.abs(xx) + 0.05 * yy, "plane": 0.15 * xx, "flat": np.full((n, n), 20.0),
+         "gentle": 0.01 * xx}[shape]
+    centre = np.zeros((n, n), dtype=bool)
+    centre[n // 2, n // 2] = True
+    f = landform_fractions(h, cell, centre)
+    assert max(f, key=f.get) == want
+
+
+def test_unmeasured_playtest_has_no_statistics(small_world):
+    w = clone_world(small_world)
+    w.cfg.psych.agent_minutes = 0.0
+    st = evaluate_psychology(w)["statistics"]
+    for k in ("bored_fraction", "lost_fraction", "backtrack_ratio", "overall_per_run"):
+        assert st[k]["n"] == 0 and st[k]["mean"] is None, k
+
+
+def test_spawn_is_fixed_for_the_world(small_world):
+    from ofm.world import POI
+    w = clone_world(small_world)
+    assert w.spawn is not None                     # set by the first play-test
+    first = list(w.spawn)
+    # an edit adds a settlement somewhere else: the agents still start where they did
+    w.pois = [POI(id="poi_x", kind="settlement", x=40.0, y=40.0, z=0.0, importance=0.8)] + list(w.pois)
+    evaluate_psychology(w)
+    assert w.spawn == first

@@ -86,8 +86,9 @@ def test_natural_anisotropy_and_tilt_are_not_grid_artifacts():
         ax, dg = grid_alignment(z / z.std() * 50, 1.0, land)
         assert ax < 0.25 and dg < 0.25, ang
     yy, xx = np.mgrid[0:n, 0:n].astype(float)
-    ax, dg = grid_alignment(0.4 * xx, 8.0, land)
-    assert ax < 1e-6 and dg < 1e-6
+    # no detail at all: not measurable, rather than round-off directions or blur edge effects
+    assert grid_alignment(0.4 * xx + 0.1 * yy, 8.0, land) == (None, None)
+    assert grid_alignment(0.002 * ((xx - 128) ** 2 + (yy - 128) ** 2), 8.0, land) == (None, None)
     ax_n, dg_n = grid_alignment(_fbm(n, 3.2, 2), 1.0, land)
     assert ax_n < 0.05 and dg_n < 0.05
 

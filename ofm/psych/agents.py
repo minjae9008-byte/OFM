@@ -214,15 +214,22 @@ def simulate_agents(world, per: Perception, landmarks, lm_visible: np.ndarray) -
     walk = np.flatnonzero(~blocked.ravel() & np.array([len(e) > 0 for e in nav.nbr]))
     if walk.size == 0:
         return empty
-    # spawn: a settlement, otherwise the walkable cell nearest the centre
-    spawns = [p for p in world.pois if p.kind == "settlement"]
-    if spawns:
-        spawn = cell_of(spawns[0].x, spawns[0].y)
-        if spawn not in set(walk.tolist()):
-            spawn = int(walk[np.argmin(np.abs(walk - spawn))])
-    else:
-        cxy = np.stack([per.ox[walk], per.oy[walk]], 1)
-        spawn = int(walk[np.argmin(np.hypot(cxy[:, 0] - world.extent / 2, cxy[:, 1] - world.extent / 2))])
+    # spawn: fixed per world at its first play-test (the first settlement, otherwise the walkable
+    # cell nearest the centre), so the AI director compares candidates from the same start even
+    # if an edit adds, moves or floods a settlement; if the spot is not walkable any more the
+    # nearest walkable cell is used
+    cxy = np.stack([per.ox[walk], per.oy[walk]], 1)
+    if world.spawn is None:
+        spawns = [p for p in world.pois if p.kind == "settlement"]
+        if spawns:
+            world.spawn = [float(spawns[0].x), float(spawns[0].y)]
+        else:
+            k = int(np.argmin(np.hypot(cxy[:, 0] - world.extent / 2, cxy[:, 1] - world.extent / 2)))
+            world.spawn = [float(cxy[k, 0]), float(cxy[k, 1])]
+    sx, sy = world.spawn
+    spawn = cell_of(sx, sy)
+    if spawn not in set(walk.tolist()):
+        spawn = int(walk[np.argmin(np.hypot(cxy[:, 0] - sx, cxy[:, 1] - sy))])
 
     boredom = np.zeros(P)
     visits = np.zeros(P)

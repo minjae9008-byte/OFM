@@ -53,14 +53,16 @@ def extract_json(text: str) -> dict | None:
     return cands[0] if cands else None
 
 
-def json_candidates(text: str, limit: int = 6) -> list[dict]:
+def json_candidates(text: str, limit: int = 6, max_starts: int = 96) -> list[dict]:
     """JSON objects that ``text`` may mean, most likely first.
 
     A clean reply (or a fenced block) gives one object. Otherwise every balanced object is a
     candidate, scanning from the first ``{``; when an object never closes (the reply was cut
     off at the output token limit) its complete members are salvaged as a candidate too,
     before the objects nested inside it. ``chat_json`` keeps the candidate that validates
-    best, so a truncated wrapper does not hide a complete payload inside it and vice versa."""
+    best, so a truncated wrapper does not hide a complete payload inside it and vice versa.
+    At most ``max_starts`` opening braces are tried (each try scans to the end of the text), so
+    a reply full of unmatched braces cannot stall the run."""
     if not text:
         return []
     text = text.strip()
@@ -76,7 +78,9 @@ def json_candidates(text: str, limit: int = 6) -> list[dict]:
         except (json.JSONDecodeError, ValueError):
             pass
         start = src.find("{")
-        while start >= 0 and len(out) < limit:
+        tries = 0
+        while start >= 0 and len(out) < limit and tries < max_starts:
+            tries += 1
             end = _balanced_end(src, start)
             if end is None:
                 part = salvage_object(src, start)

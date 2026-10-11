@@ -225,7 +225,8 @@ def test_rebuild_restores_protected_content(mid_world):
     assert _inside(pol, cand.features) == _inside(pol, w0.features)
     assert _inside(pol, cand.pois) == _inside(pol, w0.pois)
     sp0 = next(p for p in w0.pois if p.kind == "settlement")
-    assert cand.pois[0].kind == "settlement" and (cand.pois[0].x, cand.pois[0].y) == (sp0.x, sp0.y)
+    sp1 = next(p for p in cand.pois if p.kind == "settlement")      # the agents start at the first one
+    assert (sp1.x, sp1.y) == (sp0.x, sp0.y)
     for kind in set(cand.scatter) | set(w0.scatter):
         a = cand.scatter.get(kind, np.zeros((0, 5)))
         b = w0.scatter.get(kind, np.zeros((0, 5)))

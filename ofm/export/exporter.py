@@ -238,6 +238,10 @@ def build_manifest(world: World, vol: VolumeResult, terrain: dict, meshes: list,
         "meshes": meshes,
         "water": water,
         "pois": pois,
+        # where the play-test agents started (a natural player start)
+        "spawn": None if world.spawn is None else {
+            "x": float(world.spawn[0]), "y": float(world.spawn[1]),
+            "z": float(world.height_at(world.spawn[0], world.spawn[1]))},
         "landmarks": landmarks,
         "caves": caves,
         "features": [f.to_dict() for f in world.features],
