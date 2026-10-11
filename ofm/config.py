@@ -497,15 +497,20 @@ class ConfigError(ValueError):
     pass
 
 
-def _coerce(value: Any, current: Any, path: str) -> Any:
+def _coerce(value: Any, current: Any, path: str, elem: type | None = None) -> Any:
+    """Convert ``value`` to the type of ``current``; ``elem`` is the element type of a list
+    field (from its annotation), so "5,20" becomes [5.0, 20.0] for a list[float]."""
     if isinstance(current, bool):
         if isinstance(value, str):
             return value.strip().lower() in ("1", "true", "yes", "on")
         return bool(value)
-    if isinstance(current, int) and not isinstance(current, bool):
-        return int(value)
-    if isinstance(current, float):
-        return float(value)
+    try:
+        if isinstance(current, int) and not isinstance(current, bool):
+            return int(value)
+        if isinstance(current, float):
+            return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{path}: expected a number, got {value!r}") from exc
     if isinstance(current, str):
         return str(value)
     if isinstance(current, list):
@@ -513,18 +518,30 @@ def _coerce(value: Any, current: Any, path: str) -> Any:
             value = [v.strip() for v in value.split(",") if v.strip()]
         if not isinstance(value, list):
             raise ConfigError(f"{path}: expected a list")
+        if elem in (int, float):
+            try:
+                return [elem(v) for v in value]
+            except (TypeError, ValueError) as exc:
+                raise ConfigError(f"{path}: expected numbers, got {value!r}") from exc
+        if elem is str:
+            return [str(v) for v in value]
         return value
     return value
 
 
-def _list_item_type(obj: Any, key: str) -> type | None:
-    """Dataclass element type of a ``list[SomeDataclass]`` field, else None."""
+def _list_elem(obj: Any, key: str) -> type | None:
+    """Element type of a ``list[...]`` field (int, float, str or a dataclass), else None."""
     hint = typing.get_type_hints(type(obj)).get(key)
     if typing.get_origin(hint) is list:
         args = typing.get_args(hint)
-        if args and is_dataclass(args[0]):
-            return args[0]
+        return args[0] if args else None
     return None
+
+
+def _list_item_type(obj: Any, key: str) -> type | None:
+    """Dataclass element type of a ``list[SomeDataclass]`` field, else None."""
+    elem = _list_elem(obj, key)
+    return elem if elem is not None and is_dataclass(elem) else None
 
 
 def _merge(obj: Any, data: dict[str, Any], path: str = "") -> None:
@@ -546,8 +563,10 @@ def _merge(obj: Any, data: dict[str, Any], path: str = "") -> None:
                 _merge(item, entry, f"{full}[{i}]")
                 items.append(item)
             setattr(obj, key, items)
+        elif item_type is not None:
+            raise ConfigError(f"{full}: expected an array of tables")
         else:
-            setattr(obj, key, _coerce(value, current, full))
+            setattr(obj, key, _coerce(value, current, full, _list_elem(obj, key)))
 
 
 def config_from_dict(data: dict[str, Any]) -> OFMConfig:
@@ -591,7 +610,42 @@ def set_by_path(cfg: OFMConfig, dotted: str, value: Any) -> None:
     leaf = parts[-1]
     if not is_dataclass(obj) or leaf not in {f.name for f in fields(obj)}:
         raise ConfigError(f"unknown config key '{dotted}'")
-    setattr(obj, leaf, _coerce(value, getattr(obj, leaf), dotted))
+    if _list_item_type(obj, leaf) is not None:
+        # list of tables (profiles, zones, param ranges): a TOML inline array on the command
+        # line, e.g. --set 'ai.scope.protected_zones=[{x = 800, y = 900, radius = 200}]'
+        if isinstance(value, str):
+            try:
+                value = tomllib.loads("v = " + value)["v"]
+            except tomllib.TOMLDecodeError as exc:
+                raise ConfigError(f"{dotted}: expected a TOML array of tables like "
+                                  f"[{{key = value}}, ...]: {exc}") from exc
+        _merge(obj, {leaf: value}, ".".join(parts[:-1]))
+        return
+    setattr(obj, leaf, _coerce(value, getattr(obj, leaf), dotted, _list_elem(obj, leaf)))
+
+
+def _numbers(obj: Any, path: str = ""):
+    """(dotted path, value) of every float in the config, list elements included."""
+    for f in fields(obj):
+        v = getattr(obj, f.name)
+        p = f"{path}.{f.name}" if path else f.name
+        if is_dataclass(v):
+            yield from _numbers(v, p)
+        elif isinstance(v, float):
+            yield p, v
+        elif isinstance(v, list):
+            for i, x in enumerate(v):
+                if is_dataclass(x):
+                    yield from _numbers(x, f"{p}[{i}]")
+                elif isinstance(x, float):
+                    yield f"{p}[{i}]", x
+
+
+def _check_band(band: Any, name: str) -> None:
+    ok = isinstance(band, (list, tuple)) and len(band) == 2 and all(
+        isinstance(b, (int, float)) and not isinstance(b, bool) and math.isfinite(b) for b in band)
+    if not ok or band[0] > band[1]:
+        raise ConfigError(f"{name} must be [low, high] with two finite numbers, low <= high (got {band!r})")
 
 
 def validate(cfg: OFMConfig) -> None:
@@ -613,7 +667,16 @@ def validate(cfg: OFMConfig) -> None:
             raise ConfigError(f"unknown export engine '{engine}'")
     if cfg.ai.provider not in ("auto", "ollama", "openai", "none"):
         raise ConfigError("ai.provider must be auto, ollama, openai or none")
+    # every number must be finite: inf/NaN in a band, budget or step would leak into the
+    # simulation or into world.json, which must stay strict JSON for the engine importers
+    for path, v in _numbers(cfg):
+        if not math.isfinite(v):
+            raise ConfigError(f"{path} must be a finite number (got {v}); use a large value for 'no limit'")
     ev = cfg.evaluation
+    if not 0.0 < ev.confidence < 1.0:
+        raise ConfigError("evaluation.confidence must be between 0 and 1 (e.g. 0.9 for 90 %)")
+    if ev.band_softness <= 0 or cfg.quality.band_softness <= 0:
+        raise ConfigError("evaluation.band_softness and quality.band_softness must be > 0")
     if not 2 <= ev.region_divs <= 8:
         raise ConfigError("evaluation.region_divs must be between 2 and 8")
     if ev.runs < 1:
@@ -624,9 +687,19 @@ def validate(cfg: OFMConfig) -> None:
         raise ConfigError("evaluation.weights must be non-negative and not all zero")
     for name in ("event_gap_s", "bored_fraction", "discoveries_per_hour", "coverage_seen",
                  "landmark_coverage", "lost_fraction", "backtrack_ratio"):
-        band = getattr(ev.targets, name)
-        if len(band) != 2 or band[0] > band[1]:
-            raise ConfigError(f"evaluation.targets.{name} must be [low, high]")
+        _check_band(getattr(ev.targets, name), f"evaluation.targets.{name}")
+    qc = cfg.quality
+    for name in ("slope_median_deg", "hypsometric_integral", "drainage_density_km", "spectral_slope",
+                 "coastline_dimension", "landform_entropy"):
+        _check_band(getattr(qc, name), f"quality.{name}")
+    for name in ("max_pit_fraction", "max_spike_fraction", "max_axis_artifact", "max_diagonal_artifact"):
+        if getattr(qc, name) < 0:
+            raise ConfigError(f"quality.{name} must be >= 0")
+    if any(v < 0 for v in asdict(qc.weights).values()):
+        raise ConfigError("quality.weights must be non-negative")
+    positive = {k for k, v in asdict(ev.weights).items() if v > 0}
+    if positive <= {"terrain_quality"} and not qc.enabled:
+        raise ConfigError("evaluation.weights only weight terrain_quality, but quality.enabled is false")
     sc = cfg.ai.scope
     bad = [a for a in sc.allowed_actions if a not in AI_ACTIONS]
     if bad:
@@ -653,7 +726,12 @@ def validate(cfg: OFMConfig) -> None:
             raise ConfigError("ai.scope.protected_zones need finite x, y and radius")
     if not (math.isfinite(sc.protect_spawn_radius) and sc.protect_spawn_radius >= 0):
         raise ConfigError("ai.scope.protect_spawn_radius must be a finite number >= 0")
-    if not (math.isfinite(cfg.fluvial.deposition) and cfg.fluvial.deposition >= 0):
-        raise ConfigError("fluvial.deposition must be a finite number >= 0")
+    fc = cfg.fluvial
+    if fc.dt_years <= 0 or fc.n <= 0 or fc.m < 0:
+        raise ConfigError("fluvial.dt_years and fluvial.n must be > 0, fluvial.m >= 0")
+    for name in ("iterations", "fine_iterations", "k_erosion", "uplift_rate", "diffusion", "deposition",
+                 "max_change", "roughness", "flexure_m", "floodplain_m", "critical_slope", "routing_exponent"):
+        if getattr(fc, name) < 0:
+            raise ConfigError(f"fluvial.{name} must be >= 0")
     if cfg.fluvial.resolution_divisor not in (1, 2, 4):
         raise ConfigError("fluvial.resolution_divisor must be 1, 2 or 4")

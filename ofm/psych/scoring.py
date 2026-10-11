@@ -79,6 +79,8 @@ def t_quantile(p: float, dof: int) -> float:
     """Student-t quantile: exact for 1 and 2 degrees of freedom, Cornish-Fisher expansion
     around the normal quantile otherwise (within 1 % for dof >= 3 at the 90-95 % levels,
     a few % at 99 %)."""
+    if not 0.0 < p < 1.0:
+        raise ValueError(f"t_quantile needs 0 < p < 1, got {p}")
     if dof <= 0:
         return float("inf")
     if dof == 1:                                   # Cauchy: exact
@@ -102,7 +104,8 @@ def summarize(values: Iterable[float], confidence: float = 0.9,
         return {"n": 0, "mean": None, "std": None, "ci_low": None, "ci_high": None}
     mean = sum(xs) / n
     if n == 1:
-        return {"n": 1, "mean": mean, "std": 0.0, "ci_low": mean, "ci_high": mean}
+        # one sample says nothing about the spread: the interval is undefined, not zero-width
+        return {"n": 1, "mean": mean, "std": None, "ci_low": None, "ci_high": None}
     std = math.sqrt(sum((x - mean) ** 2 for x in xs) / (n - 1))
     half = t_quantile(0.5 + confidence / 2.0, n - 1) * std / math.sqrt(n)
     lo, hi = mean - half, mean + half

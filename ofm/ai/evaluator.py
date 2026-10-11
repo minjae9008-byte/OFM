@@ -333,8 +333,8 @@ def heuristic_review(world: World, rejected: list[str], max_actions: int, langua
     weakest = sorted(((k, v) for k, v in sc.items() if k != "overall"), key=lambda kv: kv[1])[:2]
     names_ko = {"scenic": "경관", "variety": "다양성", "legibility": "랜드마크 가독성", "mystery": "미스터리",
                 "pacing": "페이싱", "exploration": "탐험 범위", "prospect_refuge": "조망-피신"}
-    bored = float(mt.get("bored_fraction", 0.0)) * 100
-    gap = float(mt.get("mean_event_gap_s", 0.0))
+    bored = float(mt.get("bored_fraction") or 0.0) * 100
+    gap = float(mt.get("mean_event_gap_s") or 0.0)
     if language == "ko":
         critique = (f"종합 {overall:.1f}/10. 약점은 " + ", ".join(f"{names_ko.get(k, k)}({v:.1f})" for k, v in weakest)
                     + f"입니다. 플레이테스트 에이전트는 시간의 {bored:.0f}%를 지루하게 보냈고 "

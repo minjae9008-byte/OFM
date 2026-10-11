@@ -31,6 +31,11 @@ from .perception import compute_perception
 from .scoring import band_score, rounded, summarize, weighted_overall
 
 
+BEHAVIOUR_METRICS = ("bored_fraction", "mean_event_gap_s", "p90_event_gap_s", "events_per_minute", "coverage_seen",
+                     "poi_discovery", "discoveries_per_agent_hour", "lost_fraction", "backtrack_ratio",
+                     "fatigue_fraction")
+
+
 def _mean(xs) -> float:
     xs = [float(x) for x in xs]
     return float(np.mean(xs)) if xs else 0.0
@@ -40,11 +45,11 @@ def _agent_metrics(logs: list[AgentLog], per, reachable: np.ndarray, n_pois: int
                    strong_threshold: float = 0.35) -> dict:
     """Pooled play-test metrics of a group of agents."""
     G = per.grid
-    if not logs:
-        return {"bored_fraction": 0.0, "mean_event_gap_s": 0.0, "p90_event_gap_s": 0.0, "events_per_minute": 0.0,
-                "coverage_seen": 0.0, "poi_discovery": 0.0, "discoveries_per_agent_hour": 0.0,
-                "lost_fraction": 0.0, "backtrack_ratio": 0.0, "fatigue_fraction": 0.0}
-    total = sum(l.duration for l in logs) or 1.0
+    total = sum(l.duration for l in logs)
+    if not logs or total <= 0:
+        # nothing was measured (no walkable spawn, or zero-length runs): None, so the
+        # behaviour sub-scores drop out instead of scoring placeholder zeros as perfect
+        return {k: None for k in BEHAVIOUR_METRICS}
     gaps = np.concatenate([np.array(l.gaps) for l in logs if l.gaps]) if any(l.gaps for l in logs) \
         else np.array([total / len(logs)])
     strong = sum(1 for l in logs for e in l.events if e[2] >= strong_threshold)
@@ -144,6 +149,11 @@ def evaluate_psychology(world: World) -> dict:
         sc = dict(static)
         sc.update(_behaviour_scores(m, lm_cov, ev))
         overall, _ = weighted_overall(sc, ev.weights)
+        if overall is None:
+            # every weighted sub-score is missing (e.g. only terrain_quality weighted but not
+            # analysed): fall back to the unweighted mean rather than reporting 0 as measured
+            avail = [float(v) for v in sc.values() if v is not None]
+            overall = float(np.mean(avail)) if avail else None
         sc["overall"] = overall
         return sc, m
 
@@ -160,7 +170,9 @@ def evaluate_psychology(world: World) -> dict:
                           "metrics": rounded({k: m[k] for k in ("bored_fraction", "mean_event_gap_s",
                                               "discoveries_per_agent_hour", "lost_fraction", "backtrack_ratio",
                                               "fatigue_fraction")}, 3)}
-    run_overall = [score_group([l for l in logs if l.run == r])[0]["overall"] for r in range(sim.get("runs", 1))]
+    # only runs that produced play-test data: an empty run would repeat the static scores
+    run_groups = [[l for l in logs if l.run == r] for r in range(sim.get("runs", 1))]
+    run_overall = [score_group(g)[0]["overall"] for g in run_groups if g and sum(l.duration for l in g) > 0]
     conf = ev.confidence
     per_agent = {
         "bored_fraction": [l.bored_fraction for l in logs],
@@ -195,9 +207,9 @@ def evaluate_psychology(world: World) -> dict:
     out_scores = {k: round(float(v), 2) for k, v in scores.items() if v is not None and k != "overall"}
     out_scores["overall"] = round(float(scores["overall"] or 0.0), 3)
     metrics = rounded(pooled, 3)
-    metrics["mean_event_gap_s"] = round(pooled["mean_event_gap_s"], 1)
-    metrics["p90_event_gap_s"] = round(pooled["p90_event_gap_s"], 1)
-    metrics["discoveries_per_agent_hour"] = round(pooled["discoveries_per_agent_hour"], 1)
+    for k in ("mean_event_gap_s", "p90_event_gap_s", "discoveries_per_agent_hour"):
+        if pooled[k] is not None:
+            metrics[k] = round(pooled[k], 1)
     metrics.update({
         "landmark_coverage": round(lm_cov, 3),
         "biome_entropy": round(biome_entropy, 3),
@@ -217,6 +229,8 @@ def evaluate_psychology(world: World) -> dict:
         "metrics": metrics,
         "regions": region_table(world),
         "weights": {k: round(v, 4) for k, v in eff_weights.items()},
+        "overall_basis": "weighted" if eff_weights else ("unweighted mean" if scores["overall"] is not None
+                                                          else "none"),
         "profiles": profiles,
         "statistics": statistics,
         "intensity_per_minute": _intensity_curve(logs, world.cfg.psych.agent_minutes),

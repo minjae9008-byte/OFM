@@ -112,32 +112,59 @@ def spike_fraction(h: np.ndarray, land: np.ndarray, k: float = 7.0) -> float | N
     return float(spike.sum() / land.sum())
 
 
-def grid_alignment(h: np.ndarray, spacing: float, land: np.ndarray) -> tuple[float | None, float | None]:
-    """(axis, diagonal) alignment of high-pass detail from the 4th circular moment of gradient directions."""
-    detail = h - blur(h, 2.0)
+def grid_alignment(h: np.ndarray, spacing: float, land: np.ndarray,
+                   sigma: float = 2.0) -> tuple[float | None, float | None]:
+    """(axis, diagonal) 4-fold alignment of high-pass detail (gradient directions).
+
+    With circular moments ``m_p = sum(w e^{ip theta}) / sum(w)`` a 4-fold grid artefact
+    (terracing or channels along both axes, or both diagonals) shows up in ``m4``. Natural
+    2-fold anisotropy (parallel ridges, a regional tilt) also produces ``m4``: for a
+    direction distribution concentrated around one axis (wrapped normal) it is exactly
+    ``m2^2 |m2|^2``. Only the excess over that is attributed to the grid, so ridges in
+    any direction and a tilted plane score 0. Re(excess) > 0: aligned with the axes,
+    < 0: with the diagonals. A border strip of 3 sigma is ignored: the edge-padded blur
+    leaves axis-aligned detail there on any sloping map."""
+    detail = h - blur(h, sigma)
     gy, gx = np.gradient(detail, spacing)
     w = np.hypot(gx, gy) * land
-    if w.sum() <= 1e-12:
+    b = int(np.ceil(3.0 * sigma))
+    if min(h.shape) > 4 * b:
+        w[:b, :] = w[-b:, :] = 0.0
+        w[:, :b] = w[:, -b:] = 0.0
+    total = w.sum()
+    if total <= 1e-12:
         return None, None
     theta = np.arctan2(gy, gx)
-    re = float((w * np.cos(4.0 * theta)).sum() / w.sum())
+    m2 = complex((w * np.exp(2j * theta)).sum() / total)
+    m4 = complex((w * np.exp(4j * theta)).sum() / total)
+    re = (m4 - m2 * m2 * abs(m2) ** 2).real
     return max(0.0, re), max(0.0, -re)
 
 
-def spectral_slope(h: np.ndarray, land: np.ndarray | None = None) -> float | None:
-    """Profile-equivalent power-spectrum exponent of the (detrended, Hann-windowed) surface."""
+def spectral_slope(h: np.ndarray, land: np.ndarray | None = None, floor: float | None = None,
+                   min_land: float = 0.05) -> float | None:
+    """Profile-equivalent power-spectrum exponent of the (detrended, Hann-windowed) surface.
+
+    With a ``land`` mask, water cells are raised to the shoreline (``floor``, e.g. the
+    sea level; default the lowest land) so the sea floor neither dominates the spectrum
+    nor leaves a step at the coast; lake beds above it are kept. Returns None for too
+    little land (< ``min_land``) or a surface without relief."""
     n = min(h.shape)
     if n < 32:
         return None
     z = h[:n, :n].astype(np.float64)
-    if land is not None and land[:n, :n].any():
-        # water is flattened to its own mean so sea floors do not dominate the spectrum
+    if land is not None:
         m = land[:n, :n]
-        z = np.where(m, z, float(z[m].mean()))
+        if m.mean() < min_land:
+            return None
+        fill = float(z[m].min()) if floor is None else float(floor)
+        z = np.where(m, z, np.maximum(z, fill))
     yy, xx = np.mgrid[0:n, 0:n] / n
     A = np.stack([np.ones(n * n), xx.ravel(), yy.ravel()], axis=1)
     coef, *_ = np.linalg.lstsq(A, z.ravel(), rcond=None)
     z = z - (A @ coef).reshape(n, n)
+    if float(z.std()) < 1e-3:              # millimetres: round-off, not terrain
+        return None
     win = np.outer(np.hanning(n), np.hanning(n))
     p = np.abs(np.fft.fftshift(np.fft.fft2(z * win))) ** 2
     c = n // 2
@@ -152,23 +179,61 @@ def spectral_slope(h: np.ndarray, land: np.ndarray | None = None) -> float | Non
     return float(-slope2 - 1.0)
 
 
-def landform_fractions(h: np.ndarray, cell: float, land: np.ndarray) -> dict[str, float]:
-    hs = blur(h, 1.0)
-    s_deg = np.degrees(np.arctan(slope(hs, cell)))
-    lap = sum(shifted(hs, dy, dx) for dy, dx in NEIGHBORS8) / 8.0 - hs       # > 0: concave (valley)
-    # curvature threshold relative to this terrain's own curvature spread: about a fifth of
-    # the land is classed ridge and a fifth valley on typical relief
-    t = 0.8 * float(np.std(lap[land])) if land.any() else 0.0
-    r = 3
-    peak = (hs >= sliding_max(hs, r) - 1e-9) & (s_deg < 12)
-    pit = (hs <= sliding_min(hs, r) + 1e-9) & (s_deg < 12)
+# Geomorphon lookup (Jasiewicz & Stepinski 2013): row = number of directions in which the
+# terrain falls away ('-'), column = number in which it rises ('+'). Their ten forms are
+# merged into the six reported classes: spur -> ridge, hollow -> valley, shoulder and
+# footslope (slope breaks) -> slope.
+_GEOMORPHON = [
+    "FFFLLVVVP",   # '-' = 0   (F flat, L footslope, V valley, P pit)
+    "FFLLLVVV",    # 1
+    "FHSSOOV",     # 2         (H shoulder, S slope, O hollow)
+    "HHSSSO",      # 3
+    "HHUSS",       # 4         (U spur)
+    "RRUU",        # 5         (R ridge)
+    "RRR",         # 6
+    "RR",          # 7
+    "K",           # 8         (K peak)
+]
+_GEO_CLASS = {"F": "flat", "L": "slope", "H": "slope", "S": "slope", "V": "valley", "O": "valley",
+              "P": "pit", "U": "ridge", "R": "ridge", "K": "peak"}
+
+
+def landform_fractions(h: np.ndarray, cell: float, land: np.ndarray, radius_m: float = 200.0,
+                       flat_deg: float = 1.0) -> dict[str, float]:
+    """Shares of land in six landform classes from geomorphons (Jasiewicz & Stepinski 2013).
+
+    For each of the 8 directions the highest and lowest elevation angle along the line of
+    sight (up to ``radius_m``) decide whether the terrain rises ('+'), falls ('-') or stays
+    level within ``flat_deg`` ('0'); the counts of '+' and '-' select the form. The
+    threshold is an angle, so the classes describe the terrain itself: a plain of a few
+    metres relief is flat, a mountain range is ridges, slopes and valleys."""
+    n0, n1 = h.shape
+    L = max(2, int(round(radius_m / cell)))
+    pad = np.pad(h.astype(np.float64), L, mode="constant", constant_values=np.nan)
+    t = np.tan(np.radians(flat_deg))
+    plus = np.zeros(h.shape, dtype=np.int16)
+    minus = np.zeros(h.shape, dtype=np.int16)
+    for dy, dx in NEIGHBORS8:
+        step = cell * float(np.hypot(dy, dx))
+        hi = np.full(h.shape, -np.inf)
+        lo = np.full(h.shape, np.inf)
+        for d in range(1, L + 1):
+            nb = pad[L + d * dy:L + d * dy + n0, L + d * dx:L + d * dx + n1]
+            ang = (nb - h) / (d * step)               # tan of the elevation angle
+            ok = np.isfinite(ang)
+            hi = np.where(ok, np.maximum(hi, ang), hi)
+            lo = np.where(ok, np.minimum(lo, ang), lo)
+        seen = np.isfinite(hi)
+        zen = np.where(seen, hi, 0.0)                 # strongest rise in this direction
+        nad = np.where(seen, -lo, 0.0)                # strongest drop
+        plus += (zen - nad > t)
+        minus += (nad - zen > t)
     code = {k: i for i, k in enumerate(LANDFORMS)}
-    cls = np.full(h.shape, code["slope"], dtype=np.int8)
-    cls[lap < -t] = code["ridge"]
-    cls[lap > t] = code["valley"]
-    cls[(s_deg < 3.0) & (np.abs(lap) <= t)] = code["flat"]
-    cls[peak] = code["peak"]
-    cls[pit] = code["pit"]
+    table = np.full((9, 9), code["slope"], dtype=np.int8)
+    for m, row in enumerate(_GEOMORPHON):
+        for p_, ch in enumerate(row):
+            table[m, p_] = code[_GEO_CLASS[ch]]
+    cls = table[np.minimum(minus, 8), np.minimum(plus, 8)]
     counts = np.bincount(cls[land], minlength=len(LANDFORMS))
     total = max(1, int(counts.sum()))
     return {k: float(counts[code[k]] / total) for k in LANDFORMS}
@@ -247,7 +312,7 @@ def analyze_terrain(world) -> dict:
     pits = pit_fraction(world)
     spikes = spike_fraction(hires, land_hi if land_hi is not None else land)
     axis, diag = grid_alignment(hires, spacing, land_hi if land_hi is not None else land)
-    beta = spectral_slope(hires, land_hi)
+    beta = spectral_slope(hires, land_hi if land_hi is not None else land, floor=world.cfg.world.sea_level)
     forms = landform_fractions(h, cell, land) if land.any() else {k: 0.0 for k in LANDFORMS}
     form_entropy = entropy01(forms)
     coast_d = coastline_dimension(world.ocean)

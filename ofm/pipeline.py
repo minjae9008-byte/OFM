@@ -61,6 +61,10 @@ def generate_base(cfg: OFMConfig, progress: Progress | None = None) -> World:
         h = thermal_erosion(h, world.strata.hardness, cfg.erosion, wc.cell_size)
         h = carve_basins(h, cfg)
         world.height_base = h
+    if not np.isfinite(world.height_base).all():
+        from .config import ConfigError
+        raise ConfigError("the terrain simulation produced non-finite heights; check the tectonics, "
+                          "fluvial and erosion parameters")
     return world
 
 

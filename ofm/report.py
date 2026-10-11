@@ -94,10 +94,16 @@ def write_report(world, vol, out: Path, manifest: dict) -> None:
         for k, v in sim["scores"].items():
             lines.append(f"| {SCORE_LABELS_KO.get(k, k)} | {v:.2f} |")
         m = sim["metrics"]
-        lines += ["", f"- 플레이테스트 에이전트 지루함 비율: {m['bored_fraction'] * 100:.1f}%",
-                  f"- 평균/90% 이벤트 간격: {m['mean_event_gap_s']:.0f}s / {m['p90_event_gap_s']:.0f}s",
-                  f"- 분당 경험 이벤트: {m['events_per_minute']:.2f}, 시야 커버리지: {m['coverage_seen'] * 100:.0f}%",
-                  f"- 랜드마크 가시 커버리지: {m['landmark_coverage'] * 100:.0f}%", ""]
+        if m.get("bored_fraction") is None:
+            lines += ["", "- 플레이테스트: 측정 불가 (출발점에서 걸을 수 있는 칸이 없거나 시뮬레이션 시간이 0)"]
+        else:
+            lines += ["", f"- 플레이테스트 에이전트 지루함 비율: {m['bored_fraction'] * 100:.1f}%",
+                      f"- 평균/90% 이벤트 간격: {m['mean_event_gap_s']:.0f}s / {m['p90_event_gap_s']:.0f}s",
+                      f"- 분당 경험 이벤트: {m['events_per_minute']:.2f}, "
+                      f"시야 커버리지: {m['coverage_seen'] * 100:.0f}%"]
+        lines += [f"- 랜드마크 가시 커버리지: {m['landmark_coverage'] * 100:.0f}%", ""]
+        if sim.get("overall_basis") == "unweighted mean":
+            lines += ["- 종합 점수: 가중치가 있는 항목이 모두 없어 가용 항목의 단순 평균을 사용했습니다.", ""]
         lines += _profile_section(sim) + _statistics_section(sim)
     terrain = world.evaluation.get("terrain") or {}
     if terrain.get("score") is not None:
@@ -134,15 +140,15 @@ def write_report(world, vol, out: Path, manifest: dict) -> None:
     (out / "report.md").write_text("\n".join(lines), encoding="utf-8")
     report = {"simulation": sim, "review": review, "history": world.history, "volume": vol.stats,
               "terrain": terrain, "ai_audit": audit, "timings": world.timings}
-    (out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1,
-                                                default=lambda o: o.tolist() if isinstance(o, np.ndarray) else str(o)),
-                                     encoding="utf-8")
+    from .export.exporter import strict_json
+    (out / "report.json").write_text(json.dumps(strict_json(report), ensure_ascii=False, indent=1, allow_nan=False,
+                                                default=str), encoding="utf-8")
 
 
 def _fmt(v) -> str:
     if isinstance(v, float):
         return f"{v:.2f}"
-    return str(v)
+    return "-" if v is None else str(v)
 
 
 def _profile_section(sim: dict) -> list[str]:

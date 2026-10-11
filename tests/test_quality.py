@@ -42,22 +42,68 @@ def test_spike_detection():
     assert spike_fraction(spiky, land) >= 30 / h.size
 
 
+def _grooves(n, angles, seed, count=300, depth=6.0):
+    """Incised straight grooves (channel segments) with directions drawn from ``angles``."""
+    rng = np.random.default_rng(seed)
+    yy, xx = np.mgrid[0:n, 0:n].astype(float)
+    g = np.zeros((n, n))
+    for _ in range(count):
+        a = np.radians(rng.choice(angles))
+        cx, cy, length = rng.uniform(0, n), rng.uniform(0, n), rng.uniform(20, 80)
+        dx, dy = np.cos(a), np.sin(a)
+        t = np.clip((xx - cx) * dx + (yy - cy) * dy, -length / 2, length / 2)
+        g = np.minimum(g, -depth * np.exp(-(np.hypot(xx - (cx + t * dx), yy - (cy + t * dy)) / 1.2) ** 2))
+    return g
+
+
 def test_grid_axis_artifacts():
-    n = 128
+    n = 256
     yy, xx = np.mgrid[0:n, 0:n].astype(float)
     land = np.ones((n, n), dtype=bool)
-    def stairs(deg):
-        a = np.radians(deg)
-        return np.floor((xx * np.cos(a) + yy * np.sin(a)) / 4.0) * 3.0
+    base = _fbm(n, 3.2, 0) * 0.3 + 0.3 * xx                       # rough terrain on a regional tilt
+    ax_a, dg_a = grid_alignment(base + _grooves(n, [0, 90], 0), 1.0, land)      # channels along the axes
+    ax_d, dg_d = grid_alignment(base + _grooves(n, [45, 135], 0), 1.0, land)    # ... along the diagonals
+    ax_r, dg_r = grid_alignment(base + _grooves(n, list(range(180)), 0), 1.0, land)   # any direction
+    assert ax_a > 0.04 and dg_a == 0.0
+    assert dg_d > 0.06 and ax_d == 0.0
+    assert ax_r < 0.6 * ax_a and dg_r < 0.6 * dg_d
 
-    ax_a, dg_a = grid_alignment(stairs(0.0), 1.0, land)        # terraces along a grid axis
-    ax_d, dg_d = grid_alignment(stairs(45.0), 1.0, land)       # terraces along the diagonal (D8 lines)
-    ax_r, dg_r = grid_alignment(stairs(22.5), 1.0, land)       # same terraces at a neutral angle
+
+def test_natural_anisotropy_and_tilt_are_not_grid_artifacts():
+    # parallel ridges (fold belts, dunes) are 2-fold, not 4-fold; a smooth tilted plane has none
+    n = 256
+    land = np.ones((n, n), dtype=bool)
+    rng = np.random.default_rng(1)
+    kx, ky = np.fft.fftfreq(n)[None, :], np.fft.fftfreq(n)[:, None]
+    for ang in (0.0, 22.5, 45.0):
+        a = np.radians(ang)
+        ku, kv = kx * np.cos(a) + ky * np.sin(a), -kx * np.sin(a) + ky * np.cos(a)
+        k = np.hypot(ku, 4 * kv)
+        k[0, 0] = 1.0
+        amp = k ** -1.6
+        amp[0, 0] = 0.0
+        z = np.real(np.fft.ifft2(amp * np.exp(2j * np.pi * rng.random((n, n)))))
+        ax, dg = grid_alignment(z / z.std() * 50, 1.0, land)
+        assert ax < 0.25 and dg < 0.25, ang
+    yy, xx = np.mgrid[0:n, 0:n].astype(float)
+    ax, dg = grid_alignment(0.4 * xx, 8.0, land)
+    assert ax < 1e-6 and dg < 1e-6
     ax_n, dg_n = grid_alignment(_fbm(n, 3.2, 2), 1.0, land)
-    assert ax_a > 0.8 and dg_a == 0.0
-    assert dg_d > 0.8 and ax_d == 0.0
-    assert ax_r < 0.25 and dg_r < 0.25
-    assert ax_n < 0.15 and dg_n < 0.15
+    assert ax_n < 0.05 and dg_n < 0.05
+
+
+@pytest.mark.parametrize("beta2", [2.4, 3.2, 4.8])
+def test_spectral_slope_with_partial_land(beta2):
+    # water raised to the shoreline: no coastline step that would pin the exponent near 2
+    z = _fbm(512, beta2, 1)
+    thr = np.quantile(z, 0.4)
+    assert abs(spectral_slope(z, z > thr) - (beta2 - 1.0)) < 0.2
+
+
+def test_spectral_slope_needs_land_and_relief():
+    assert spectral_slope(np.full((129, 129), 50.0)) is None
+    z = _fbm(128, 3.2, 0)
+    assert spectral_slope(z, np.zeros_like(z, dtype=bool)) is None
 
 
 def test_pits_ignore_lakes_and_count_spurious_bowls():
@@ -107,7 +153,7 @@ def test_summary_statistics():
     s = summarize([1.0, 2.0, 3.0, 4.0], 0.9)
     assert s["ci_low"] < s["mean"] < s["ci_high"] and s["n"] == 4
     one = summarize([5.0])
-    assert one["ci_low"] == one["ci_high"] == 5.0
+    assert one["mean"] == 5.0 and one["ci_low"] is None and one["ci_high"] is None   # undefined, not zero-width
     assert summarize([])["mean"] is None
 
 

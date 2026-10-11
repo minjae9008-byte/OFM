@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -261,6 +262,25 @@ def build_manifest(world: World, vol: VolumeResult, terrain: dict, meshes: list,
     }
 
 
+def strict_json(o):
+    """Copy of ``o`` with numpy values converted and NaN/Infinity replaced by null: JSON has
+    no such numbers and the engine importers' parsers reject the whole file otherwise."""
+    if isinstance(o, dict):
+        return {str(k): strict_json(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [strict_json(v) for v in o]
+    if isinstance(o, np.ndarray):
+        return strict_json(o.tolist())
+    if isinstance(o, (bool, np.bool_)):
+        return bool(o)
+    if isinstance(o, (int, np.integer)):
+        return int(o)
+    if isinstance(o, (float, np.floating)):
+        f = float(o)
+        return f if math.isfinite(f) else None
+    return o
+
+
 def _json_default(o):
     if isinstance(o, (np.integer,)):
         return int(o)
@@ -285,6 +305,7 @@ def export_world(world: World, vol: VolumeResult, out_dir: str | Path) -> Path:
     previews = write_previews(world, vol, out) if cfg.export.previews else {}
     manifest = build_manifest(world, vol, terrain, meshes, water, scatter, previews)
     path = out / "world.json"
-    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=1, default=_json_default), encoding="utf-8")
+    path.write_text(json.dumps(strict_json(manifest), ensure_ascii=False, indent=1, default=_json_default,
+                               allow_nan=False), encoding="utf-8")
     write_report(world, vol, out, manifest)
     return path
