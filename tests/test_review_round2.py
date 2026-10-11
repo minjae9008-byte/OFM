@@ -1,6 +1,5 @@
 """Regression tests for evaluation/integration issues found in review round 2."""
 import json
-import math
 
 import numpy as np
 import pytest

@@ -247,6 +247,8 @@ def apply_action(world: World, action: dict, rng: np.random.Generator,
             reach = f.height * 0.75 + f.radius if f.kind == "arch" else f.radius
             if not _footprint_clear(world, f.x, f.y, reach, forbid):
                 raise ActionError(f"{lk} in {region} would overlap protected ground")
+            if not f.stands_dry(world):
+                raise ActionError(f"{lk} in {region} would stand in a lake or river")
             world.features.append(f)
             rec.update(x=site[0], y=site[1], feature=f.id)
     elif kind == "add_cave":

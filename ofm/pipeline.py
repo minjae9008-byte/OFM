@@ -132,6 +132,7 @@ def rebuild(world: World, progress: Progress | None = None, psych: bool = True,
         user_feats = [f for f in world.features if f.source != "procedural"]
         for f in user_feats:  # re-seat edited landmarks on the new ground
             f.z = float(world.ground_at(f.x, f.y)) if f.kind != "sea_stack" else f.z
+            f.foot = f.footing(world)
         world.features = place_procedural_features(world) + user_feats
         for k, f in enumerate(world.features):
             f.id = f"feature_{k}"

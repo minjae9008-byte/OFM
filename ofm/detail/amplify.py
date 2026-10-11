@@ -75,7 +75,7 @@ def amplify(world) -> tuple[np.ndarray, float]:
     h = strata_terrace(h, fold, world.strata, steep * cc.terrace_strength, np.hypot(gx, gy), spacing)
 
     # export-resolution landforms: rills, scree, floodplains, beaches (detail/hires.py)
-    h = refine(world, h, fold, U, V, spacing)
+    h = refine(world, h, fold, U, V, spacing, base)
 
     if world.lake_mask is not None and world.lake_mask.any():
         # Outside lakes use the terrain itself, which meets the lake level at the shore.

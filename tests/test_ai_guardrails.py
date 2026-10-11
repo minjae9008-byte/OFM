@@ -14,7 +14,7 @@ from ofm.ai.evaluator import _clean_scores, _parse_sample, review
 from ofm.ai.llm import extract_json, salvage_object
 from ofm.ai.lore import generate_lore
 from ofm.ai.schema import validate
-from ofm.ai.scope import ScopePolicy, ScopeViolation
+from ofm.ai.scope import ScopePolicy
 from ofm.config import ConfigError, ParamRange, load_config
 from ofm.pipeline import rebuild
 from tests.test_ai_scope import SCORES, _Handler, _llm, _posts, _reply, _world, server  # noqa: F401

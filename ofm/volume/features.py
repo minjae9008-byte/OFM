@@ -28,17 +28,59 @@ class Feature:
     name: str = ""
     description: str = ""
     extra: dict = field(default_factory=dict)
+    foot: float = 25.0    # the rock reaches this far below ``z`` (see ``footing``)
 
     # -- geometry -----------------------------------------------------------
     @property
     def top(self) -> float:
         return self.z + self.height
 
+    def _arch_dims(self) -> tuple[float, float]:
+        major = self.height * 0.62
+        return major, max(self.radius * 0.5, major * 0.3)
+
+    def footprint(self) -> tuple[np.ndarray, np.ndarray]:
+        """Ground points under the rock at its base: both legs of an arch, the disc of the
+        others."""
+        if self.kind == "arch":
+            major, minor = self._arch_dims()
+            a = (np.array([-1.0, 1.0])[:, None] * major + np.linspace(-minor, minor, 3)[None, :]).ravel()
+            b = np.linspace(-1.35 * minor, 1.35 * minor, 3)
+        else:
+            r = self.radius * (1.1 if self.kind == "monolith" else 1.0)
+            ang = np.linspace(0.0, 2.0 * np.pi, 12, endpoint=False)
+            a = np.concatenate([[0.0], 0.5 * r * np.cos(ang), r * np.cos(ang)])
+            b = np.concatenate([[0.0], 0.5 * r * np.sin(ang), r * np.sin(ang)])
+        if self.kind == "arch":
+            a, b = (m.ravel() for m in np.meshgrid(a, b))
+        c, s = np.cos(self.angle), np.sin(self.angle)
+        return self.x + a * c - b * s, self.y + a * s + b * c
+
+    def footing(self, world) -> float:
+        """Depth below ``z`` that reaches 2 m under the lowest ground beneath the footprint, so
+        the downhill leg or side of a landform on a slope does not float, while the rock stops
+        short of caves running deeper underneath."""
+        x, y = self.footprint()
+        low = float(np.min(world.ground_at(x, y)))
+        least = 1.5 * self._arch_dims()[1] if self.kind == "arch" else 2.0
+        return max(least, self.z - low + 2.0)
+
+    def stands_dry(self, world) -> bool:
+        """True if no part of the footprint is on a lake, the sea or a river channel: the
+        rock would wall off the water (sea stacks stand in the sea by definition)."""
+        if self.kind == "sea_stack":
+            return True
+        x, y = self.footprint()
+        i = np.clip((np.asarray(x) / world.cell).astype(np.int64), 0, world.size - 1)
+        j = np.clip((np.asarray(y) / world.cell).astype(np.int64), 0, world.size - 1)
+        wet = world.water | world.river_mask if world.river_mask is not None else world.water
+        return not bool(wet[j, i].any())
+
     def bbox(self, pad: float = 4.0) -> tuple[np.ndarray, np.ndarray]:
         r = self.radius
         if self.kind == "arch":
             r = self.height * 0.75 + self.radius
-        lo = np.array([self.x - r - pad, self.y - r - pad, self.z - 25.0])
+        lo = np.array([self.x - r - pad, self.y - r - pad, self.z - self.foot - pad])
         hi = np.array([self.x + r + pad, self.y + r + pad, self.top + pad])
         return lo, hi
 
@@ -65,16 +107,16 @@ class Feature:
             else:
                 side = np.hypot(dx, dy) - r
             cap = dz - self.height
-            return np.maximum(side, cap)
+            return np.maximum(np.maximum(side, cap), -(dz + self.foot))
         if self.kind == "arch":
             c, s = np.cos(self.angle), np.sin(self.angle)
             a = dx * c + dy * s            # along the span
             b = -dx * s + dy * c           # across (thickness)
-            major = self.height * 0.62
-            minor = max(self.radius * 0.5, major * 0.3)
-            q1 = np.hypot(a, dz) - major
+            major, minor = self._arch_dims()
+            # a half ring above the base; below it the legs go straight down to the footing
+            q1 = np.hypot(a, np.maximum(dz, 0.0)) - major
             ring = np.sqrt(q1 * q1 + (b / 1.35) ** 2) - minor
-            return np.maximum(ring, -(dz + minor * 1.5))
+            return np.maximum(ring, -(dz + self.foot))
         raise ValueError(f"unknown feature kind {self.kind}")
 
     def stamp_top(self, h: np.ndarray, cell: float) -> None:
@@ -122,7 +164,9 @@ def make_feature(world, kind: str, x: float, y: float, rng: np.random.Generator,
     height, radius = dims[0] * scale, dims[1] * scale
     if kind == "sea_stack":
         height += world.cfg.world.sea_level - z
-    return Feature(
+    f = Feature(
         id=f"feature_{len(world.features)}", kind=kind, x=float(x), y=float(y), z=z,
         height=float(height), radius=float(radius), angle=float(rng.uniform(0, np.pi)), source=source,
     )
+    f.foot = f.footing(world)
+    return f

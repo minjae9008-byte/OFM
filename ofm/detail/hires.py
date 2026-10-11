@@ -23,9 +23,10 @@ run on the export grid, in the order material moves through a landscape:
     wave-cut platform just below sea level (Sunamura 1992, Trenhaile 1987);
     the cliff itself is left untouched.
 
-Hard constraints are enforced last: river channels stay open below their
-water surface, the sea floor stays below sea level (lake beds are clamped by
-``amplify``). Every process can be switched off in ``detail.hires``.
+Hard constraints are enforced last: lake shores are not cut below their
+lake's level, river channels stay open below their water surface, the sea
+floor stays below sea level (lake beds are clamped by ``amplify``). Every
+process can be switched off in ``detail.hires``.
 """
 from __future__ import annotations
 
@@ -411,9 +412,28 @@ def shape_coasts(h: np.ndarray, ocean: np.ndarray, cliff_w: np.ndarray, hard: np
 
 
 # -- driver -----------------------------------------------------------------------
+def lake_shore_floor(world, base: np.ndarray, U: np.ndarray, V: np.ndarray) -> np.ndarray | None:
+    """Lowest the export grid may go around lakes: the interpolated simulation surface,
+    capped at the lake level. A lake's shore is its dam; rills, beaches or detail cutting
+    it below the level would drain the lake on the detail grid (the water sheet would hang
+    over the breach). -inf away from lakes and on the lake beds themselves."""
+    if world.lake_mask is None or not world.lake_mask.any():
+        return None
+    lv = np.where(world.lake_mask, world.lake_level, -np.inf)
+    rim = lv.copy()
+    for dy, dx in NEIGHBORS8:
+        rim = np.maximum(rim, shifted(lv, dy, dx, -np.inf))
+    size = world.size
+    ci = np.clip(np.floor(U + 0.5).astype(np.int64), 0, size - 1)
+    cj = np.clip(np.floor(V + 0.5).astype(np.int64), 0, size - 1)
+    bed = bilinear(world.lake_mask.astype(np.float64), U, V) > 0.5
+    return np.where(bed, -np.inf, np.minimum(base, rim[cj, ci]))
+
+
 def refine(world, h: np.ndarray, fold: np.ndarray, U: np.ndarray, V: np.ndarray,
-           spacing: float) -> np.ndarray:
-    """Run the enabled export-resolution processes on ``h`` and enforce water constraints."""
+           spacing: float, base: np.ndarray | None = None) -> np.ndarray:
+    """Run the enabled export-resolution processes on ``h`` and enforce water constraints
+    (``base``: the interpolated simulation surface, which keeps lake shores closed)."""
     cfg = world.cfg
     hc = cfg.detail.hires
     sea = cfg.world.sea_level
@@ -451,6 +471,9 @@ def refine(world, h: np.ndarray, fold: np.ndarray, U: np.ndarray, V: np.ndarray,
         h = shape_coasts(h, ocean, cliff, world.strata.hardness(h, fold), sea, spacing, hc)
 
     h = np.where(dry, np.maximum(h, floor_dry), h)
+    shore = lake_shore_floor(world, h if base is None else base, U, V)
+    if shore is not None:
+        h = np.where(ocean, h, np.maximum(h, shore))
     h = open_channels(h, rf, water_w, spacing)
     if rf is not None:
         h = clear_ribbons(h, _river_samples(world, spacing * 0.25, spacing, vertices=True), spacing,

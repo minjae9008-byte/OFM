@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import copy
 from collections import Counter
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 

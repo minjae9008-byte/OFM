@@ -14,6 +14,7 @@ from ..grid import bilinear, box_blur, chamfer_distance, sliding_max, sliding_mi
 from ..noise import derive_seed
 from ..physics.biome import B
 from ..world import POI
+from .lakes import lake_surface, under_lake
 
 
 def _hz(world, x, y):
@@ -24,10 +25,13 @@ def poi_candidates(world) -> list[POI]:
     cell = world.cell
     h = world.height
     cands: list[POI] = []
+    surface = lake_surface(world)
 
     def add(kind, x, y, imp, z=None, props=()):
-        cands.append(POI(id="", kind=kind, x=float(x), y=float(y),
-                         z=float(_hz(world, x, y) if z is None else z),
+        z = float(_hz(world, x, y) if z is None else z)
+        if under_lake(world, x, y, z, surface):          # drowned by a lake sheet
+            return
+        cands.append(POI(id="", kind=kind, x=float(x), y=float(y), z=z,
                          importance=float(imp), region=world.region_of(x, y), props=list(props)))
 
     for cave in world.caves:

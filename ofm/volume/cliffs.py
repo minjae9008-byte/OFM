@@ -50,6 +50,8 @@ def place_procedural_features(world) -> list:
             if not far(x, y):
                 continue
             f = make_feature(world, kind, x, y, rng, scale)
+            if not f.stands_dry(world):
+                continue
             f.id = f"feature_{len(world.features) + len(feats)}"
             feats.append(f)
             taken.append((x, y))
@@ -63,7 +65,9 @@ def place_procedural_features(world) -> list:
     hard = world.hardness > 0.6
     dry = world.precipitation < np.quantile(world.precipitation[~world.water], 0.45) if (~world.water).any() else hard
     pick(~world.water & hard & dry & (s_deg > 22) & (s_deg < 40), 2, "spire")
-    pick(~world.water & hard & dry & (s_deg < 12) & (h > np.quantile(h, 0.5)), 1, "butte")
+    land = ~world.water
+    upland = h > (np.quantile(h[land], 0.5) if land.any() else np.inf)   # of the land, not the sea floor
+    pick(land & hard & dry & (s_deg < 12) & upland, 1, "butte")
     # Arches: hard, insoluble rock on steep ground.
     insoluble = world.strata.solubility(h) < 0.2
     pick(~world.water & hard & insoluble & (s_deg > 18) & (s_deg < 35), 1, "arch")

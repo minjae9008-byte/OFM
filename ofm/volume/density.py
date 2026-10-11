@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ..detail.lakes import lake_surface
 from ..grid import bilinear, dilate, gradient, label, smoothstep
 from ..noise import Noise, derive_seed
 
@@ -30,11 +31,13 @@ class DensityField:
         self.slope_factor = np.sqrt(1.0 + gx * gx + gy * gy)
         slope_deg = np.degrees(np.arctan(np.hypot(gx, gy)))
         cliff_w = smoothstep(self.cc.cliff_slope_deg - 6.0, self.cc.cliff_slope_deg + 6.0, slope_deg)
-        # undercuts and rough rock are weathering of exposed faces: not on steep lake beds or
-        # the sea floor (wave notches at sea level are handled separately)
+        # undercuts and rough rock are weathering of exposed faces: not on steep lake beds, the
+        # sea floor or river beds, which the flow keeps smooth like ``amplify`` does (wave
+        # notches at sea level are handled separately)
         n0 = self.hires.shape[0]
         c0 = np.arange(n0) * self.spacing / world.cell - 0.5
-        wet = bilinear(world.water.astype(np.float64), c0[None, :], c0[:, None])
+        wet_cells = world.water if world.river_mask is None else world.water | world.river_mask
+        wet = bilinear(wet_cells.astype(np.float64), c0[None, :], c0[:, None])
         cliff_w = cliff_w * (1.0 - smoothstep(0.3, 0.7, wet))
         # Only coherent cliff faces get volumetric treatment, not isolated steep pixels.
         lab, n = label(cliff_w > 0.5)
@@ -44,6 +47,11 @@ class DensityField:
             big[0] = False
             cliff_w = cliff_w * dilate(big[lab], 1)
         self.cliff_w = cliff_w
+        # the water surface over every detail quad (lake sheets, else the sea): faces below it
+        # are not weathered (the coarse mask above misses the shore band the sheets cover)
+        lakes = lake_surface(world)
+        nq = self.hires.shape[0] - 1
+        self.water_level = np.full((nq, nq), float(self.sea)) if lakes is None else np.fmax(lakes, self.sea)
         n = self.hires.shape[0]
         coords = np.arange(n) * self.spacing
         X, Y = np.meshgrid(coords, coords)
@@ -91,13 +99,17 @@ class DensityField:
         soft = 1.0 - strata.hardness_table[idx]
 
         if cliff2.max() > 0.01:
-            r = self.cc.undercut_depth * soft ** 1.5 * cliff2 / 0.567
+            nq = self.water_level.shape[0]
+            wl = self.water_level[np.clip(np.floor(v).astype(np.int64), 0, nq - 1),
+                                  np.clip(np.floor(u).astype(np.int64), 0, nq - 1)][..., None]
+            exposed = smoothstep(wl - 1.0, wl + 0.5, Z)
+            r = self.cc.undercut_depth * soft ** 1.5 * cliff2 / 0.567 * exposed
             D = D - r * np.exp(-below / np.maximum(r, 1e-3))
             # rough rock surface, evaluated only on near-surface cliff voxels
             m = (np.broadcast_to(cliff2, D.shape) > 0.02) & (np.abs(D0) < 24.0)
             if m.any():
                 rough = self.noise.fbm3(X[m] / 9.0, Y[m] / 9.0, Z[m] / 7.0, 3) * self.cc.rock_noise
-                D[m] += rough * np.broadcast_to(cliff2, D.shape)[m] * np.exp(-np.abs(D0[m]) / 8.0)
+                D[m] += rough * (np.broadcast_to(cliff2, D.shape) * exposed)[m] * np.exp(-np.abs(D0[m]) / 8.0)
         if coast2.max() > 0.01:
             zn = (Z - self.sea - self.cc.notch_height * 0.6) / self.cc.notch_height
             nd = self.cc.notch_depth * coast2 * np.exp(-zn * zn) * (0.5 + soft) / 0.567

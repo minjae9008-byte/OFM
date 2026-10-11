@@ -3,47 +3,17 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..grid import bilinear, dilate, label
+from ..detail.lakes import lake_sheets
+from ..grid import bilinear
 from ..volume.mesher import Mesh
 
 
 def lake_meshes(world) -> list[tuple[dict, Mesh, np.ndarray]]:
-    """One flat mesh per lake on the exported (detail) grid.
-
-    Quads over lake cells are water; a one-cell shore ring is added where the ground stays
-    above the water (the sheet tucks under the shore) but not where it falls away (the
-    outlet valley), where a grown sheet would hang in the air."""
+    """One flat mesh per lake on the exported (detail) grid (see ``detail.lakes``)."""
     out = []
-    if world.lake_mask is None or not world.lake_mask.any():
-        return out
-    lab, n = label(world.lake_mask, diagonal=True)
-    cell = world.cell
-    h = world.hires
     sp = world.hires_spacing
-    nq = h.shape[0] - 1
-    qc = (np.arange(nq) + 0.5) * sp
-    bi = np.clip((qc / cell).astype(int), 0, world.size - 1)
-    vmin = np.minimum(np.minimum(h[:-1, :-1], h[:-1, 1:]), np.minimum(h[1:, :-1], h[1:, 1:]))
-    levels = np.where(world.lake_mask, world.lake_level, np.nan)
-    for lake in world.lakes:
-        cx, cy = lake["center"]
+    for lake, qj, qi in lake_sheets(world):
         level = lake["level"]
-        # find the component whose cells sit at this lake's level
-        comp = None
-        for k in range(1, n + 1):
-            m = lab == k
-            if abs(float(np.nanmean(levels[m])) - level) < 1e-3:
-                jj, ii = np.nonzero(m)
-                if np.hypot((ii.mean() + 0.5) * cell - cx, (jj.mean() + 0.5) * cell - cy) < 4 * cell + 1:
-                    comp = m
-                    break
-        if comp is None:
-            continue
-        wet = comp[np.ix_(bi, bi)]
-        ring = dilate(comp, 1)[np.ix_(bi, bi)] & ~wet & (vmin >= level - 0.5)
-        qj, qi = np.nonzero(wet | ring)
-        if not len(qi):
-            continue
         corners = np.stack([np.stack([qi, qj], 1), np.stack([qi + 1, qj], 1),
                             np.stack([qi + 1, qj + 1], 1), np.stack([qi, qj + 1], 1)], axis=1)
         uniq, inv = np.unique(corners.reshape(-1, 2), axis=0, return_inverse=True)

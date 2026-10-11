@@ -14,6 +14,7 @@ import numpy as np
 from ..grid import bilinear, blur, chamfer_distance, gradient, slope, smoothstep
 from ..noise import Noise, derive_seed
 from ..physics.biome import B, BIOME_VEG
+from .lakes import lake_surface, under_lake
 
 # type -> (min spacing m, base scale)
 SCATTER_TYPES = {
@@ -75,6 +76,7 @@ def scatter_vegetation(world) -> dict[str, np.ndarray]:
     sea = cfg.world.sea_level
     lake_level = np.where(world.lake_mask, world.lake_level, -np.inf) if world.lake_mask is not None \
         else np.full((world.size, world.size), -np.inf)
+    surface = lake_surface(world)          # lake sheets reach past the lake cells to the shoreline
     raw = {}
     for k_idx, (kind, (spacing, base_scale)) in enumerate(SCATTER_TYPES.items()):
         m = maps[kind]
@@ -97,7 +99,7 @@ def scatter_vegetation(world) -> dict[str, np.ndarray]:
         lo, hi = (40.0, 52.0) if kind == "boulder" else (32.0, 44.0)
         ci = np.clip((x / world.cell).astype(int), 0, world.size - 1)
         cj = np.clip((y / world.cell).astype(int), 0, world.size - 1)
-        wet = (z < sea + 0.05) | (z < lake_level[cj, ci] + 0.05)
+        wet = (z < sea + 0.05) | (z < lake_level[cj, ci] + 0.05) | under_lake(world, x, y, z, surface)
         if kind != "reed":
             wet |= world.river_mask[cj, ci]
         ok = ~wet & (rng.random(len(x)) < 1.0 - smoothstep(lo, hi, s_hi))

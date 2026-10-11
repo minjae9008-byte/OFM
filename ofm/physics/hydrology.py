@@ -16,7 +16,7 @@ import heapq
 import numpy as np
 
 from ..config import OFMConfig
-from ..grid import NEIGHBORS8, blur, border_mask, label
+from ..grid import NEIGHBORS8, blur, border_mask, label, shifted
 from .climate import evaporation_mm, runoff_fraction
 
 SECONDS_PER_YEAR = 31_557_600.0
@@ -123,21 +123,25 @@ def simulate_hydrology(cfg: OFMConfig, height: np.ndarray, temperature: np.ndarr
     q = accumulate(order, receiver, local_q)
 
     # --- lakes from depressions -------------------------------------------
-    candidate = (depth > hc.min_lake_depth) & ~ocean
-    lab, n = label(candidate, diagonal=True)
-    lake_mask = np.zeros_like(candidate)
+    # A depression (one flat of the filled surface) holds a lake if enough of it is deeper
+    # than ``min_lake_depth``; the lake then covers all of it below its level, the shallow
+    # margin included (left dry, rivers would run in it below the lake's surface).
+    depressed = (depth > 0.0) & ~ocean
+    deep = depth > hc.min_lake_depth
+    lab, n = label(depressed, diagonal=True)
+    lake_mask = np.zeros_like(depressed)
     lake_level = np.full(height.shape, np.nan)
-    playa = np.zeros_like(candidate)
-    sink = np.zeros_like(candidate)
+    playa = np.zeros_like(depressed)
+    sink = np.zeros_like(depressed)
     lakes = []
     evap = evaporation_mm(temperature)
     h_out = height.copy()
-    for k in range(1, n + 1):
+    n_deep = np.bincount(lab.ravel(), weights=deep.ravel(), minlength=n + 1)
+    small = (lab > 0) & (n_deep[lab] < hc.min_lake_cells)
+    h_out[small] = filled[small]                   # small or shallow pits are filled in
+    for k in np.flatnonzero(n_deep[1:] >= hc.min_lake_cells) + 1:
         cells = lab == k
         count = int(cells.sum())
-        if count < hc.min_lake_cells:
-            h_out[cells] = filled[cells]           # tiny pits are filled in
-            continue
         inflow = float(q[cells].max()) / hc.flow_scale   # real (unexaggerated) inflow, m3/s
         evap_rate = float(evap[cells].mean()) / 1000.0 / SECONDS_PER_YEAR  # m/s
         spill = float(filled[cells].max())
@@ -148,7 +152,7 @@ def simulate_hydrology(cfg: OFMConfig, height: np.ndarray, temperature: np.ndarr
             closed = False
         else:
             n_wet = int(np.clip(inflow / (cell * cell * evap_rate), 1, count))
-            level = float(floor[n_wet - 1]) + 0.3
+            level = min(float(floor[n_wet - 1]) + 0.3, spill)
             closed = True
         wet = cells & (height < level)
         if wet.sum() < max(2, hc.min_lake_cells // 2):
@@ -182,9 +186,21 @@ def simulate_hydrology(cfg: OFMConfig, height: np.ndarray, temperature: np.ndarr
     chan_depth = hc.channel_depth_k * np.maximum(q, 0.0) ** 0.4
     carve = np.where(river, chan_depth + hc.valley_carve * np.log1p(q), 0.0)
     carve = np.maximum(carve, blur(carve, max(1.0, 1.2)) * 0.8)
-    h_out = h_out - np.where(lake_mask | ocean, 0.0, carve)
+    carved = h_out - np.where(lake_mask | ocean, 0.0, carve)
+    # the shore of a lake is its dam: carving a channel or valley beside it must not cut
+    # below its level (the outflow starts at the sill, it does not drain the lake)
+    rim = np.full(height.shape, -np.inf)
+    lv = np.where(lake_mask, lake_level, -np.inf)
+    for dy, dx in NEIGHBORS8:
+        rim = np.maximum(rim, shifted(lv, dy, dx, -np.inf))
+    rec = receiver.reshape(-1)
+    into_lake = np.zeros(rec.size, dtype=bool)
+    into_lake[rec >= 0] = lake_mask.reshape(-1)[rec[rec >= 0]]
+    mouth = river & into_lake.reshape(height.shape)   # a river may enter a lake below its level
+    floor = np.where(np.isfinite(rim) & ~lake_mask & ~ocean & ~mouth, np.minimum(h_out, rim), -np.inf)
+    h_out = np.maximum(carved, floor)
 
-    rivers, waterfalls = _trace_rivers(river, receiver, q, h_out, width, chan_depth, water, cell, hc)
+    rivers, waterfalls = _trace_rivers(river, receiver, q, h_out, width, chan_depth, water, cell, hc, floor)
 
     # Water table: subdued copy of topography relative to local base level.
     base = blur(np.where(water | river, h_out, filled), size * 0.06)
@@ -209,7 +225,10 @@ def simulate_hydrology(cfg: OFMConfig, height: np.ndarray, temperature: np.ndarr
     }
 
 
-def _trace_rivers(river, receiver, q, h, width, chan_depth, water, cell, hc):
+def _trace_rivers(river, receiver, q, h, width, chan_depth, water, cell, hc, floor=None):
+    """River polylines down the receiver tree; the bed profile never rises downstream and
+    never drops below ``floor`` (lake shores) further down, where a carved channel would
+    drain the lake: upstream of such a shore the bed is aggraded to it."""
     size = river.shape[1]
     rec = receiver.reshape(-1)
     rflat = river.reshape(-1)
@@ -220,6 +239,7 @@ def _trace_rivers(river, receiver, q, h, width, chan_depth, water, cell, hc):
     heads = heads[np.argsort(-h.reshape(-1)[heads])]
     visited = np.zeros(rflat.size, dtype=bool)
     hflat = h.reshape(-1)
+    fflat = floor.reshape(-1) if floor is not None else None
     qflat = q.reshape(-1)
     wflat = water.reshape(-1)
     rivers, falls = [], []
@@ -250,8 +270,10 @@ def _trace_rivers(river, receiver, q, h, width, chan_depth, water, cell, hc):
         z = hflat[p].copy()
         for k in range(1, len(z)):            # rivers never flow uphill
             z[k] = min(z[k], z[k - 1])
+        if fflat is not None:
+            z = np.maximum(z, np.maximum.accumulate(fflat[p][::-1])[::-1])
         own = p[:-1] if joined is not None else p   # a junction cell belongs to the river already traced
-        hflat[own] = np.minimum(hflat[own], z[:len(own)])
+        hflat[own] = z[:len(own)]
         pts = np.stack([(ii + 0.5) * cell, (jj + 0.5) * cell, z, qflat[p]], axis=1)
         drops = np.concatenate([[0.0], z[:-1] - z[1:]])
         for k in range(1, len(z)):
@@ -267,9 +289,16 @@ def _trace_rivers(river, receiver, q, h, width, chan_depth, water, cell, hc):
         smooth = _chaikin(pts, 2)
         widths = hc.channel_width_k * np.sqrt(np.maximum(smooth[:, 3], 0.0))
         depths = hc.channel_depth_k * np.maximum(smooth[:, 3], 0.0) ** 0.4
+        # water surface: bed plus most of the bankfull depth; depth grows downstream, so on
+        # a flat (aggraded) bed it must still not climb. A lake's outflow leaves at the lake's
+        # surface (its head is the sill, whose floor is the lake level), not above it.
+        surface = smooth[:, 2] + depths * 0.8
+        if fflat is not None and np.isfinite(fflat[p[0]]):
+            surface[0] = min(surface[0], fflat[p[0]])
+        surface = np.minimum.accumulate(surface)
         rivers.append({
             "id": f"river_{len(rivers)}",
-            "points": [[float(x), float(y), float(zz + d * 0.8)] for (x, y, zz, _), d in zip(smooth, depths)],
+            "points": [[float(x), float(y), float(zs)] for (x, y), zs in zip(smooth[:, :2], surface)],
             "width": [float(w) for w in widths],
             "discharge": [float(v) for v in smooth[:, 3]],
             "mouth": "join" if joined is not None else ("water" if wflat[p[-1]] else "edge"),

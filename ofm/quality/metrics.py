@@ -34,7 +34,7 @@ import math
 
 import numpy as np
 
-from ..grid import NEIGHBORS8, blur, box_blur, shifted, sliding_max, sliding_min, slope
+from ..grid import NEIGHBORS8, blur, box_blur, shifted, slope
 from ..physics.hydrology import priority_flood
 from ..psych.scoring import band_score, upper_limit_score, weighted_overall
 
