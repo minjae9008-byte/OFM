@@ -24,6 +24,7 @@ import numpy as np
 
 from ..grid import bilinear, box_blur, slope, smoothstep
 from ..physics.biome import BIOME_VEG, BIOMES
+from ..volume.features import rock_at
 
 
 @dataclass
@@ -55,10 +56,14 @@ def compute_perception(world, batch: int = 384) -> Perception:
     gi, gj = np.meshgrid(np.arange(G), np.arange(G))
     ox = ((gi + 0.5) * cs).ravel()
     oy = ((gj + 0.5) * cs).ravel()
-    ground = bilinear(vh, ox / cell - 0.5, oy / cell - 0.5)
+    # observers stand on the ground the agents walk (under an arch, not on its crown); the
+    # visual height with the landforms only blocks their view. Inside the rock of a landform
+    # nobody stands at all.
+    ground = bilinear(world.ground(), ox / cell - 0.5, oy / cell - 0.5)
     oz = ground + pc.eye_height
     land_full = ~world.water
     land = bilinear(land_full.astype(float), ox / cell - 0.5, oy / cell - 0.5).reshape(G, G) > 0.5
+    land &= ~rock_at(world, ox, oy).reshape(G, G)
 
     K, S = pc.rays, pc.steps
     theta = np.arange(K) * (2 * np.pi / K)

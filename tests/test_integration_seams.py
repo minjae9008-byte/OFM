@@ -259,3 +259,38 @@ def test_arch_legs_stand_on_a_slope():
         assert (f.sdf(np.full_like(zs, lx), np.full_like(zs, f.y), zs) < 0).all()
     # under the span the opening stays open down to the ground
     assert f.sdf(np.array([f.x]), np.array([f.y]), np.array([f.z + 2.0]))[0] > 0
+
+
+def test_pois_stand_on_the_ground_or_on_the_water_they_mark(small_world, lake_world):
+    from ofm.detail.lakes import under_lake
+    from ofm.detail.pois import river_surface
+    from ofm.volume.features import rock_at
+    for w in (small_world, lake_world):
+        kinds = set()
+        for p in w.pois:
+            kinds.add(p.kind)
+            if p.kind == "cave_entrance":
+                continue
+            assert not rock_at(w, p.x, p.y), f"{p.kind} inside a rock landform"
+            assert not under_lake(w, p.x, p.y, p.z), p.kind
+            ws = river_surface(w, p.x, p.y)
+            ground = float(w.ground_at(p.x, p.y))
+            assert p.z >= (ground if ws is None else max(ground, ws)) - 1e-6, p.kind
+            assert p.z >= w.cfg.world.sea_level - 0.05, p.kind
+        assert "rock_formation" in kinds or not w.features
+
+
+def test_agents_do_not_walk_through_rock_landforms(small_world):
+    from ofm.psych.agents import build_nav
+    from ofm.psych.perception import compute_perception
+    from ofm.volume.features import rock_at
+    w = small_world
+    per = compute_perception(w)
+    nav = build_nav(w, per)
+    G = per.grid
+    rock = rock_at(w, per.ox, per.oy).reshape(G, G)
+    assert rock.any(), "the small world's butte covers some walking cells"
+    assert nav.blocked[rock].all() and not per.land[rock].any()
+    # observers stand on the walked ground, not on top of the rock beside them
+    ground = bilinear(w.ground(), per.ox / w.cell - 0.5, per.oy / w.cell - 0.5)
+    assert np.allclose(per.oz - ground, w.cfg.psych.eye_height)

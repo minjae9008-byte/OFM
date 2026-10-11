@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Iterable
 import numpy as np
 
 from ..config import AIScopeConfig, ConfigError, ParamRange, get_by_path, normalize_region, set_by_path, validate
+from ..detail.pois import poi_z
 from ..grid import blur, chamfer_distance, dilate, slope, smoothstep
 from ..noise import Noise, derive_seed
 from ..volume.caves import CaveSystem
@@ -274,7 +275,7 @@ def apply_action(world: World, action: dict, rng: np.random.Generator,
         site = _site(world, region, _poi_score(world, pk, land, s, rng), forbidden=forbid)
         if site is None:
             raise ActionError(f"no site for {pk} in {region}")
-        z = float(world.ground_at(*site))
+        z = poi_z(world, *site)
         world.pois.append(POI(id=f"poi_ai_{len(world.pois)}", kind=pk, x=site[0], y=site[1], z=z,
                               importance=0.8, region=region, source="ai"))
         rec.update(x=site[0], y=site[1])

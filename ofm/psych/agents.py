@@ -35,6 +35,7 @@ import numpy as np
 from ..config import AgentProfile
 from ..grid import bilinear, box_blur
 from ..noise import derive_seed
+from ..volume.features import rock_at
 from .perception import Perception
 
 NB = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
@@ -105,7 +106,8 @@ def build_nav(world, per: Perception) -> NavGraph:
     water = bilinear(water_frac, cx / cell - 0.5, cy / cell - 0.5) > 0.5
     cliff_frac = bilinear(box_blur(world.cliff_mask.astype(float), max(1, int(cs / cell / 2))),
                           cx / cell - 0.5, cy / cell - 0.5)
-    blocked = water | (cliff_frac > 0.55)
+    # rock landforms are obstacles: the ground under a spire is the terrain it stands on
+    blocked = water | (cliff_frac > 0.55) | rock_at(world, cx, cy)
     max_s = np.tan(np.radians(pc.max_walk_slope_deg))
     n = G * G
     nav = NavGraph([[] for _ in range(n)], [[] for _ in range(n)], [[] for _ in range(n)],

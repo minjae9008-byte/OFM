@@ -283,7 +283,8 @@ def seat_objects(world, vol: VolumeResult, max_shift: float = 8.0):
         keep[idx[~ok]] = False
         scatter[kind] = a[keep]
     for p in world.pois:
-        if p.kind == "cave_entrance" or not dev(p.x, p.y):
+        # cave mouths keep their own height, markers on a river's water surface stay there
+        if p.kind == "cave_entrance" or not dev(p.x, p.y) or abs(p.z - float(world.ground_at(p.x, p.y))) > 0.05:
             continue
         z, ok = volume_ground(vol.field, [p.x], [p.y], [p.z])
         if ok[0] and abs(z[0] - p.z) <= max_shift:

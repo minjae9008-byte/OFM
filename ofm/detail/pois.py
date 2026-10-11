@@ -14,11 +14,42 @@ from ..grid import bilinear, box_blur, chamfer_distance, sliding_max, sliding_mi
 from ..noise import derive_seed
 from ..physics.biome import B
 from ..world import POI
+from ..export.water import ribbon_half_width
+from ..volume.features import rock_at
 from .lakes import lake_surface, under_lake
 
 
 def _hz(world, x, y):
     return float(bilinear(world.hires, x / world.hires_spacing, y / world.hires_spacing))
+
+
+def river_surface(world, x: float, y: float) -> float | None:
+    """Water surface of the river ribbon over (x, y), None off the rivers."""
+    best = None
+    for r in world.rivers:
+        p = np.asarray(r["points"], dtype=np.float64)
+        if len(p) < 2:
+            continue
+        a, b = p[:-1], p[1:]
+        ab = b[:, :2] - a[:, :2]
+        t = np.clip(((x - a[:, 0]) * ab[:, 0] + (y - a[:, 1]) * ab[:, 1])
+                    / np.maximum((ab * ab).sum(axis=1), 1e-9), 0.0, 1.0)
+        d = np.hypot(a[:, 0] + t * ab[:, 0] - x, a[:, 1] + t * ab[:, 1] - y)
+        half = ribbon_half_width(world, r["width"])
+        hw = half[:-1] + t * (half[1:] - half[:-1])
+        k = int(np.argmin(d - hw))
+        if d[k] <= hw[k]:
+            z = float(a[k, 2] + t[k] * (b[k, 2] - a[k, 2]))
+            best = z if best is None else max(best, z)
+    return best
+
+
+def poi_z(world, x: float, y: float) -> float:
+    """Height of a POI marker: the exported ground, or the water surface of a river it
+    marks (a waterfall or confluence is not on the channel bed under the water)."""
+    z = _hz(world, x, y)
+    ws = river_surface(world, x, y)
+    return z if ws is None else max(z, ws)
 
 
 def poi_candidates(world) -> list[POI]:
@@ -28,8 +59,10 @@ def poi_candidates(world) -> list[POI]:
     surface = lake_surface(world)
 
     def add(kind, x, y, imp, z=None, props=()):
-        z = float(_hz(world, x, y) if z is None else z)
+        z = float(poi_z(world, x, y) if z is None else z)
         if under_lake(world, x, y, z, surface):          # drowned by a lake sheet
+            return
+        if kind != "cave_entrance" and rock_at(world, x, y):   # inside a rock landform
             return
         cands.append(POI(id="", kind=kind, x=float(x), y=float(y), z=z,
                          importance=float(imp), region=world.region_of(x, y), props=list(props)))
@@ -40,8 +73,10 @@ def poi_candidates(world) -> list[POI]:
             add("cave_entrance", e["x"], e["y"], imp, z=e["z"], props=[cave.id, e["kind"]])
     for f in world.waterfalls:
         add("waterfall", f["x"], f["y"], 0.7 + min(0.25, f["drop"] / 80.0), props=[f["id"]])
-    for f in world.features:
-        add("rock_formation", f.x, f.y, 0.85, props=[f.id, f.kind])
+    for f in world.features:        # visited from its foot (or the shore), not inside the rock
+        site = f.approach(world)
+        if site is not None:
+            add("rock_formation", site[0], site[1], 0.85, props=[f.id, f.kind])
 
     # Summits with prominence
     r = max(3, int(350.0 / cell))
@@ -55,7 +90,7 @@ def poi_candidates(world) -> list[POI]:
     s = slope(h, cell)
     if world.lake_mask.any():
         d_lake = chamfer_distance(world.lake_mask, max_dist=3)
-        shore = (d_lake > 0.5) & (d_lake <= 2.0) & ~world.water
+        shore = (d_lake > 0.5) & (d_lake <= 2.0) & ~world.water & ~world.river_mask
         for lake in world.lakes:
             cx, cy = lake["center"]
             jj, ii = np.nonzero(shore)
@@ -89,7 +124,7 @@ def poi_candidates(world) -> list[POI]:
 
     # Settlement sites: flat, temperate, fresh water nearby, not too high
     fresh = chamfer_distance(world.river_mask | world.lake_mask, max_dist=8)
-    good = ((s < 0.08) & (fresh <= 5) & ~world.water & (world.temperature > 4)
+    good = ((s < 0.08) & (fresh <= 5) & ~world.water & ~world.river_mask & (world.temperature > 4)
             & ~np.isin(world.biome, [B["wetland"], B["salt_flat"], B["desert"]]))
     jj, ii = np.nonzero(good)
     if len(ii):
@@ -127,7 +162,7 @@ def place_pois(world) -> list[POI]:
     dc = world.cfg.detail
     pinned = [p for p in world.pois if p.source in ("ai", "psych")]
     for p in pinned:  # keep director-placed POIs on the rebuilt ground
-        p.z = _hz(world, p.x, p.y)
+        p.z = poi_z(world, p.x, p.y)
         p.region = world.region_of(p.x, p.y)
     # The agents start at the first settlement. A director rebuild re-runs the selection and
     # an edit anywhere could move or remove that settlement, so candidates would be scored
@@ -158,7 +193,7 @@ def _keep_spawn(world, chosen: list[POI], spawn: POI, limit: int) -> list[POI]:
         p = chosen.pop(k)
     else:
         p = spawn
-        p.z = _hz(world, p.x, p.y)
+        p.z = poi_z(world, p.x, p.y)
         p.region = world.region_of(p.x, p.y)
         if len(chosen) >= limit:          # keep the count: drop the last procedural pick
             drop = next((k for k in range(len(chosen) - 1, -1, -1) if chosen[k].source == "procedural"), None)

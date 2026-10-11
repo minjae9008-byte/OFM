@@ -236,9 +236,10 @@ def test_rebuild_restores_protected_content(mid_world):
     feats = {f.id: f for f in cand.features}
     assert len(feats) == len(cand.features)
     for p in cand.pois:
-        if p.kind == "rock_formation":
+        if p.kind == "rock_formation":          # visited from its foot: the nearest landform is its own
             f = feats[p.props[0]]
-            assert (f.x, f.y) == (p.x, p.y)
+            near = min(cand.features, key=lambda g: np.hypot(g.x - p.x, g.y - p.y))
+            assert near is f and p.props[1] == f.kind
 
 
 def test_spawn_settlement_survives_rebuild(mid_world):

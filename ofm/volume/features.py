@@ -76,6 +76,26 @@ class Feature:
         wet = world.water | world.river_mask if world.river_mask is not None else world.water
         return not bool(wet[j, i].any())
 
+    def approach(self, world) -> tuple[float, float] | None:
+        """A dry point a walker can stand on to visit the landform (its POI): under an
+        arch's span, else at the foot just outside the rock on the side most level with
+        the base, or for a sea stack the nearest shore. None if there is none nearby."""
+        if self.kind == "arch" and not rock_at(world, np.array([self.x]), np.array([self.y]))[0] \
+                and _dry(world, np.array([self.x]), np.array([self.y]))[0]:
+            return self.x, self.y
+        reach = self.height * 0.75 + self.radius if self.kind == "arch" else self.radius * 1.1
+        ang = np.arange(16) * (np.pi / 8)
+        rings = [reach + 4.0] if self.kind != "sea_stack" else reach + 4.0 + 20.0 * np.arange(10)
+        for r in np.atleast_1d(rings):
+            x = np.clip(self.x + r * np.cos(ang), 0.0, world.extent)
+            y = np.clip(self.y + r * np.sin(ang), 0.0, world.extent)
+            ok = _dry(world, x, y) & ~rock_at(world, x, y)
+            if ok.any():
+                score = np.where(ok, np.abs(world.ground_at(x, y) - self.z), np.inf)
+                k = int(np.argmin(score))
+                return float(x[k]), float(y[k])
+        return None
+
     def bbox(self, pad: float = 4.0) -> tuple[np.ndarray, np.ndarray]:
         r = self.radius
         if self.kind == "arch":
@@ -145,6 +165,31 @@ class Feature:
             "angle": round(self.angle, 4), "source": self.source, "name": self.name,
             "description": self.description,
         }
+
+
+def _dry(world, x, y) -> np.ndarray:
+    i = np.clip((np.asarray(x) / world.cell).astype(np.int64), 0, world.size - 1)
+    j = np.clip((np.asarray(y) / world.cell).astype(np.int64), 0, world.size - 1)
+    wet = world.water | world.river_mask if world.river_mask is not None else world.water
+    return ~wet[j, i] & (world.ground_at(x, y) > world.cfg.world.sea_level + 0.3)
+
+
+def rock_at(world, x, y, clearance: float = 1.5) -> np.ndarray:
+    """True where a rock landform fills the air ``clearance`` metres above the exported
+    ground, so nobody can stand or walk there (an arch's opening stays free). The ground
+    under a landform is the terrain it stands on; only this test sees the rock."""
+    shape = np.shape(x)
+    x = np.atleast_1d(np.asarray(x, dtype=np.float64)).ravel()
+    y = np.atleast_1d(np.asarray(y, dtype=np.float64)).ravel()
+    out = np.zeros(x.shape, dtype=bool)
+    if world.features:
+        z = np.asarray(world.ground_at(x, y), dtype=np.float64) + clearance
+        for f in world.features:
+            lo, hi = f.bbox(pad=0.0)
+            m = (x >= lo[0]) & (x <= hi[0]) & (y >= lo[1]) & (y <= hi[1])
+            if m.any():
+                out[m] |= f.sdf(x[m], y[m], z[m]) < 0
+    return out.reshape(shape)
 
 
 def make_feature(world, kind: str, x: float, y: float, rng: np.random.Generator,
