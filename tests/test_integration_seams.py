@@ -312,3 +312,18 @@ def test_rainfall_is_the_steady_state_of_the_moisture_advection():
     ratio = p[:, -4:].mean() / p[:, :4].mean()
     steady = (1.0 - cc.base_rain * cfg.world.cell_size / 1000.0) ** (n - 1)
     assert abs(ratio - steady) < 0.006
+
+
+def test_cave_chambers_stay_under_the_ground(small_world, lake_world):
+    """A chamber's cover was only checked at its centre; its flanks could reach under a
+    valley side or a lake bed and open a crater there."""
+    for w in (small_world, lake_world):
+        for c in w.caves:
+            if c.kind == "sea":                      # a sea cave's room opens to the sea
+                continue
+            for cx, cy, cz, rx, ry, rz in c.chambers:
+                ang = np.linspace(0.0, 2.0 * np.pi, 16, endpoint=False)
+                R, A = np.meshgrid(np.array([0.0, 0.5, 0.8, 0.95]), ang)
+                top = cz + rz * np.sqrt(1.0 - R * R)
+                ground = w.ground_at(cx + rx * R * np.cos(A), cy + ry * R * np.sin(A))
+                assert (ground - top).min() > 1.0, c.id

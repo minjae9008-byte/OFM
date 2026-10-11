@@ -103,6 +103,22 @@ def _unit(v: np.ndarray) -> np.ndarray:
     return v / np.maximum(n, 1e-9)
 
 
+def _fit_chamber(t: _Terrain, cc, ch) -> list | None:
+    """Shrink a chamber until its roof stays under the ground across its whole footprint;
+    None if even a small one would break out. Cover is only known at its centre, while its
+    flanks reach under lower ground (a valley side, a lake bed)."""
+    cx, cy, cz, rx, ry, rz = (float(v) for v in ch)
+    ang = np.linspace(0.0, 2.0 * np.pi, 16, endpoint=False)
+    R, A = np.meshgrid(np.array([0.0, 0.5, 0.8, 0.95]), ang)
+    margin = 1.0 + 1.3 * cc.wall_noise              # the wall noise widens the carved shape
+    for _ in range(5):
+        top = cz + rz * np.sqrt(1.0 - R * R)
+        if (t.h(cx + rx * R * np.cos(A), cy + ry * R * np.sin(A)) - top).min() >= margin:
+            return [cx, cy, cz, rx, ry, rz]
+        rx, ry, rz = rx * 0.75, ry * 0.75, rz * 0.75
+    return None
+
+
 def _walk(t: _Terrain, cc, rng, start, target, max_len, vadose_first=True, allow_exit=True):
     """Run one dissolution agent. Returns (segments, chambers, reached_target, branch_requests)."""
     pos = np.array(start, dtype=np.float64)
@@ -170,7 +186,9 @@ def _walk(t: _Terrain, cc, rng, start, target, max_len, vadose_first=True, allow
         if rng.random() < cc.chamber_chance * (0.4 + sol[best]) and cover[best] > cc.min_cover + 2 * r0:
             room = cover[best] - cc.min_cover * 0.7
             rz = float(np.clip(r0 * rng.uniform(1.5, 2.6), r0, max(r0, room * 0.5)))
-            chambers.append([*pos, r0 * rng.uniform(2.2, 4.2), r0 * rng.uniform(2.2, 4.2), rz])
+            ch = _fit_chamber(t, cc, [*pos, r0 * rng.uniform(2.2, 4.2), r0 * rng.uniform(2.2, 4.2), rz])
+            if ch is not None:
+                chambers.append(ch)
         if rng.random() < cc.branch_chance:
             ang = rng.choice([-1, 1]) * rng.uniform(np.radians(40), np.radians(95))
             c, s = np.cos(ang), np.sin(ang)
@@ -205,7 +223,7 @@ def _branch_walk(t: _Terrain, cc, rng, start, d2, length, radius):
     chamber = None
     if segs and rng.random() < 0.5:
         r = radius * rng.uniform(2.0, 3.2)
-        chamber = [*pos, r, r * rng.uniform(0.7, 1.2), r * 0.6]
+        chamber = _fit_chamber(t, cc, [*pos, r, r * rng.uniform(0.7, 1.2), r * 0.6])
     return segs, chamber
 
 
@@ -287,7 +305,9 @@ def simulate_caves(world) -> list[CaveSystem]:
         else:
             last = segs[-1]
             r = max(last[6], last[7]) * rng.uniform(2.0, 3.0)
-            chambers.append([last[3], last[4], last[5], r, r, r * 0.6])
+            ch = _fit_chamber(t, cc, [last[3], last[4], last[5], r, r, r * 0.6])
+            if ch is not None:
+                chambers.append(ch)
         systems.append(CaveSystem(
             id=f"cave_{len(systems)}", kind=kind,
             segments=np.array(segs, dtype=np.float64),
