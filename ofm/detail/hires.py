@@ -54,8 +54,10 @@ class RiverField:
     gradient: np.ndarray    # along-channel water-surface gradient (m/m)
 
 
-def _river_samples(world, step: float, glen: float, extend: float = 0.0) -> np.ndarray | None:
-    """Dense samples (x, y, z_water, width, depth, gradient) along all river polylines."""
+def _river_samples(world, step: float, glen: float, extend: float = 0.0,
+                   vertices: bool = False) -> np.ndarray | None:
+    """Dense samples (x, y, z_water, width, depth, gradient) along all river polylines
+    (``vertices``: the polyline vertices themselves are samples too)."""
     hc = world.cfg.hydrology
     rows = []
     for r in world.rivers:
@@ -75,6 +77,8 @@ def _river_samples(world, step: float, glen: float, extend: float = 0.0) -> np.n
         if s[-1] <= 0.0:
             continue
         t = np.linspace(0.0, s[-1], int(np.ceil(s[-1] / step)) + 1)
+        if vertices:
+            t = np.union1d(t, s)
         z = np.minimum.accumulate(np.interp(t, s, p[:, 2]))       # never uphill
         wid = np.interp(t, s, wid)
         q = np.interp(t, s, q)
@@ -309,9 +313,13 @@ def open_channels(h: np.ndarray, rf: RiverField | None, water_w: np.ndarray, spa
 
 
 def clear_ribbons(h: np.ndarray, samples: np.ndarray | None, spacing: float,
-                  clearance: float = 0.1) -> np.ndarray:
+                  clearance: float = 0.1, step: float = 0.0, iterations: int = 8) -> np.ndarray:
     """Lower the four nodes around any centreline sample whose bilinear terrain would
-    reach the water surface, so the river ribbon is never blocked."""
+    reach the water surface, so the river ribbon is never blocked.
+
+    Between two samples ``step`` apart the water falls by up to gradient * step, so the
+    clearance grows with the local water gradient (column 5 of the samples); lowering
+    nodes can lift nothing, but neighbouring samples share nodes, so it iterates."""
     if samples is None or not len(samples):
         return h
     n = h.shape[0]
@@ -320,8 +328,11 @@ def clear_ribbons(h: np.ndarray, samples: np.ndarray | None, spacing: float,
     v = np.clip(samples[:, 1] / spacing, 0.0, n - 1.0)
     i0 = np.minimum(np.floor(u).astype(np.int64), n - 2)
     j0 = np.minimum(np.floor(v).astype(np.int64), n - 2)
-    for _ in range(2):
-        excess = bilinear(out, u, v) - (samples[:, 2] - clearance)
+    clear = clearance
+    if step > 0.0 and samples.shape[1] > 5:
+        clear = clearance + 0.5 * step * np.maximum(samples[:, 5], 0.0)
+    for _ in range(max(1, int(iterations))):
+        excess = bilinear(out, u, v) - (samples[:, 2] - clear)
         hit = excess > 0.0
         if not hit.any():
             break
@@ -437,5 +448,6 @@ def refine(world, h: np.ndarray, fold: np.ndarray, U: np.ndarray, V: np.ndarray,
     h = np.where(dry, np.maximum(h, floor_dry), h)
     h = open_channels(h, rf, water_w, spacing)
     if rf is not None:
-        h = clear_ribbons(h, _river_samples(world, spacing * 0.5, spacing), spacing)
+        h = clear_ribbons(h, _river_samples(world, spacing * 0.25, spacing, vertices=True), spacing,
+                          step=spacing * 0.25)
     return np.where(ocean, np.minimum(h, sea - 0.05), h)

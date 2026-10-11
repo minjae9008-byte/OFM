@@ -224,3 +224,19 @@ def test_floodplain_skips_steep_reaches():
     rf = river_field(world, h.shape[0], sp, 80.0)
     out = floodplains(h, rf, np.zeros_like(h), -100.0, sp, hc)
     assert np.abs(out - h).max() < 1e-9
+
+
+@pytest.mark.parametrize("shape,seed", [("coast", 2), ("inland", 3), ("inland", 8)])
+def test_steep_rivers_stay_open_between_vertices(shape, seed):
+    from ofm.pipeline import generate_base, rebuild
+    w = rebuild(generate_base(small_config(**{"world.size": 64, "world.shape": shape, "world.seed": seed,
+                                              "hydrology.river_min_discharge": 0.1})), psych=False)
+    sp = w.hires_spacing
+    assert w.rivers
+    for r in w.rivers:
+        p = np.asarray(r["points"])
+        t = np.linspace(0.0, 1.0, 9)[:, None]
+        for a, b in zip(p[:-1], p[1:]):
+            q = a + t * (b - a)
+            hz = bilinear(w.hires, q[:, 0] / sp, q[:, 1] / sp)
+            assert (hz <= q[:, 2] + 1e-6).all(), f"{r['id']} blocked between vertices"

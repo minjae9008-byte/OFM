@@ -653,5 +653,7 @@ def validate(cfg: OFMConfig) -> None:
             raise ConfigError("ai.scope.protected_zones need finite x, y and radius")
     if not (math.isfinite(sc.protect_spawn_radius) and sc.protect_spawn_radius >= 0):
         raise ConfigError("ai.scope.protect_spawn_radius must be a finite number >= 0")
+    if not (math.isfinite(cfg.fluvial.deposition) and cfg.fluvial.deposition >= 0):
+        raise ConfigError("fluvial.deposition must be a finite number >= 0")
     if cfg.fluvial.resolution_divisor not in (1, 2, 4):
         raise ConfigError("fluvial.resolution_divisor must be 1, 2 or 4")

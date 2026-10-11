@@ -133,15 +133,44 @@ def test_nonlinear_slope_exponent_is_stable(tect):
     assert (tec.height - out).max() > 1.0
 
 
-def test_deposition_raises_lowland_valley_floors():
+def _piedmont(size=64, cell=16.0, seed=3):
+    """Sea along the south edge, a gentle plain (0.4 %) and a steep range (25 %) to the north."""
+    rng = np.random.default_rng(seed)
+    yy, _ = np.mgrid[0:size, 0:size].astype(np.float64)
+    h = 1.0 + (yy - 4.0) * cell * 0.004 + np.maximum(yy - 28.0, 0.0) * cell * 0.25
+    return np.where(yy < 4, -10.0, h + rng.uniform(-0.2, 0.2, (size, size)))
+
+
+def test_deposition_aggrades_the_plain_below_a_mountain_front():
+    # Where the sediment flux from upstream exceeds the local incision the surface aggrades;
+    # without deposition the same plain is (slightly) incised. The range erodes either way.
     base = {"world.size": 64, "fluvial.resolution_divisor": 1, "fluvial.iterations": 30,
-            "fluvial.uplift_rate": 1e-4, "fluvial.isostasy": 0.0}
-    h0 = _plane()
+            "fluvial.uplift_rate": 0.0, "fluvial.isostasy": 0.0}
+    h0 = _piedmont()
     up = np.ones_like(h0)
-    no_dep = stream_power_erosion(h0, up, None, small_config(**dict(base, **{"fluvial.deposition": 0.0})))
-    dep = stream_power_erosion(h0, up, None, small_config(**dict(base, **{"fluvial.deposition": 1.5})))
-    land = h0 > 0
-    assert dep[land].sum() > no_dep[land].sum()           # alluvium kept on land
+    yy = np.mgrid[0:64, 0:64][0]
+    plain, rng_ = (yy >= 6) & (yy < 24), yy >= 34
+    no_dep = stream_power_erosion(h0, up, None, small_config(**dict(base, **{"fluvial.deposition": 0.0}))) - h0
+    dep = stream_power_erosion(h0, up, None, small_config(**dict(base, **{"fluvial.deposition": 1.5}))) - h0
+    assert no_dep[plain].mean() < 0.0 < dep[plain].mean()
+    assert (dep[plain] > 0.05).mean() > 0.4 > (no_dep[plain] > 0.05).mean()
+    assert dep[rng_].mean() < -10.0 and no_dep[rng_].mean() < dep[rng_].mean()
+
+
+def test_deposition_solves_the_yuan_relation_exactly(tect):
+    from ofm.physics.fluvial import _deposition, _levels
+    from ofm.physics.hydrology import accumulate
+    cfg, tec, _ = tect
+    sp = cfg.world.cell_size
+    ocean = ocean_mask(tec.height, cfg.world.sea_level)
+    rec, order, area, _ = flow_routing(tec.height, ocean, sp, np.random.default_rng(0))
+    ero = np.random.default_rng(1).uniform(0.0, 1e-3, tec.height.size)
+    inner = ~ocean.reshape(-1) & (rec >= 0)
+    for G in (0.6, 1.5, 4.0):          # any G: no lagged feedback, so no oscillation
+        D = _deposition(ero, rec, _levels(order, rec), area, sp * sp, G)
+        qs = accumulate(order, rec, (ero - D) * sp * sp)      # net flux: upstream integral of E - D
+        assert np.allclose(D[inner], G * qs[inner] / area[inner], rtol=1e-9, atol=1e-15)
+        assert (qs[inner] > 0).all()
 
 
 def test_basins_are_closed_depressions(tect, evolved):
@@ -155,3 +184,49 @@ def test_basins_are_closed_depressions(tect, evolved):
     # Carving adds depressions deep enough for hydrology to hold a lake.
     assert ((filled - carved) > 2.0).sum() > ((filled0 - out) > 2.0).sum()
     assert np.array_equal(carve_basins(out, cfg), carved)
+
+
+def _spikes(h, t=3.0):
+    p = np.pad(h, 1, mode="edge")
+    nb = np.stack([p[1 + dy:1 + dy + h.shape[0], 1 + dx:1 + dx + h.shape[1]]
+                   for dy in (-1, 0, 1) for dx in (-1, 0, 1) if dy or dx])
+    return int((h - nb.max(0) > t).sum() + (nb.min(0) - h > t).sum())
+
+
+@pytest.mark.parametrize("shape,seed", [("continent", 11), ("archipelago", 4), ("coast", 2)])
+def test_basins_never_touch_the_sea(shape, seed):
+    cfg = small_config(**{"world.size": 128, "world.shape": shape, "world.seed": seed,
+                          "tectonics.basins_per_km2": 1.0})
+    h = simulate_tectonics(cfg).height
+    carved = carve_basins(h, cfg)
+    sea = cfg.world.sea_level
+    ocean = ocean_mask(h, sea)
+    assert np.array_equal(ocean_mask(carved, sea), ocean)          # no dams in the sea
+    assert np.array_equal(carved[ocean], h[ocean])
+    dug = carved < h - 1e-9
+    assert dug.any()
+    assert not (dug & (carved < sea) & (h >= sea)).any()            # bowls stay above sea level
+
+
+def test_inland_border_follows_incision():
+    # rivers running along the map edge must not leave the fixed outlet row standing as a wall
+    over = {"world.size": 128, "world.shape": "inland", "world.seed": 3, "fluvial.resolution_divisor": 1}
+    steps = {}
+    for on in (True, False):
+        cfg = small_config(**dict(over, **{"fluvial.enabled": on}))
+        tec = simulate_tectonics(cfg)
+        h = stream_power_erosion(tec.height, tec.uplift, Strata(cfg, tec.uplift, cfg.world.cell_size), cfg)
+        steps[on] = np.concatenate([h[:, 0] - h[:, 1], h[:, -1] - h[:, -2], h[0] - h[1], h[-1] - h[-2]])
+    assert steps[True].max() <= steps[False].max() + 2.0
+    assert (steps[True] > 8.0).sum() <= (steps[False] > 8.0).sum() + 2
+
+
+def test_coastal_warp_does_not_alias():
+    cfg = small_config(**{"world.size": 128, "world.shape": "coast", "world.seed": 7})
+    h = simulate_tectonics(cfg).height
+    rough = simulate_tectonics(small_config(**{"world.size": 128, "world.shape": "coast", "world.seed": 7,
+                                                "tectonics.coast_roughness": 0.0})).height
+    assert ocean_mask(h, 0.0).sum() != ocean_mask(rough, 0.0).sum()     # the warp is active
+    # with the octaves above the grid's Nyquist limit this coast had 24-32 one-cell spikes
+    # and pits (> 3 m); the resolvable octaves leave the fold-over ones only (12-15)
+    assert _spikes(h) <= 20 + _spikes(rough)

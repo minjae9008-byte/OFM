@@ -123,8 +123,11 @@ def simulate_tectonics(cfg: OFMConfig) -> TectonicResult:
             # continental falloff alone gives ~1.0). Inland relief is left untouched.
             f = size * wc.cell_size / max(tc.coast_wavelength, 1.0)
             disp = tc.coast_roughness / wc.cell_size
-            wx = noise.fbm2(u * f + 13.7, v * f - 5.1, 7, gain=0.62)
-            wy = noise.fbm2(u * f - 41.2, v * f + 22.8, 7, gain=0.62)
+            # only octaves the grid resolves (shortest wavelength >= 2 cells, Nyquist): finer
+            # ones alias into per-cell random displacement, i.e. single-cell spikes and pits
+            octaves = int(np.clip(np.floor(np.log2(max(tc.coast_wavelength, 1.0) / (2.0 * wc.cell_size))) + 1, 1, 7))
+            wx = noise.fbm2(u * f + 13.7, v * f - 5.1, octaves, gain=0.62)
+            wy = noise.fbm2(u * f - 41.2, v * f + 22.8, octaves, gain=0.62)
             warped = bilinear(height, xx + wx * disp, yy + wy * disp)
             near = np.exp(-np.abs(height - wc.sea_level) / max(tc.coast_band, 1.0))
             height = height + near * (warped - height)
@@ -154,9 +157,14 @@ def carve_basins(height: np.ndarray, cfg: OFMConfig) -> np.ndarray:
     Sites that would need a deep gouge or a high dam are skipped; on worlds
     without any gentle site the least demanding one is still used (relaxed
     limits) so every map keeps at least one basin.
+
+    The sea is never touched: sites whose dam reach (r < 1.6) includes open-sea
+    cells are skipped, and on land the bowl floor stays above sea level (an
+    inland basin below it would sit under the engines' global ocean plane).
     """
     from ..grid import gradient
     from ..grid import slope as grid_slope
+    from ..physics.hydrology import ocean_mask
     tc, wc = cfg.tectonics, cfg.world
     rng = np.random.default_rng(derive_seed(wc.seed, "basins"))
     noise = Noise(derive_seed(wc.seed, "basins-noise"))
@@ -167,6 +175,8 @@ def carve_basins(height: np.ndarray, cfg: OFMConfig) -> np.ndarray:
     n = int(round(tc.basins_per_km2 * area_km2))
     if n <= 0 or not land.any():
         return height
+    sea_floor = wc.sea_level + 1.0
+    ocean = ocean_mask(height, wc.sea_level)
     # Broadly gentle ground at the basin scale.
     s = blur(grid_slope(height, cell), max(3.0, 0.5 * tc.basin_radius / cell))
     gx, gy = gradient(blur(height, 3.0), cell)
@@ -200,8 +210,8 @@ def carve_basins(height: np.ndarray, cfg: OFMConfig) -> np.ndarray:
         ay = (-dx * np.sin(ang) + dy * np.cos(ang)) / (radius * stretch)
         r = np.hypot(ax, ay) * (1.0 + 0.2 * noise.fbm2(xx / size * 9 + c, yy / size * 9, 3))
         ring = (r > 1.05) & (r < 1.25)
-        if not ring.any():
-            return None
+        if not ring.any() or (ocean[j0:j1, i0:i1] & (r < 1.6)).any():
+            return None                  # no rim, or the dam would be built in the sea
         # Lake level just below the lower part of the rim, at most half the basin
         # depth above the present floor (valley lakes back up the valley).
         floor_z = float(out[j, i])
@@ -212,6 +222,7 @@ def carve_basins(height: np.ndarray, cfg: OFMConfig) -> np.ndarray:
         # Smooth bowl (zero at the rim): the terrain keeps its texture and the
         # shoreline follows the contour at the lake level.
         dug = win - amp * np.clip(1.0 - r * r, 0.0, 1.0)
+        dug = np.maximum(dug, np.minimum(win, sea_floor))   # floor stays above sea level
         lab, _ = label((dug < level) & (r < 1.05), diagonal=True)
         wet = lab == lab[j - j0, i - i0]
         top = level + 1.5

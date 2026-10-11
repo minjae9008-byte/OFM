@@ -29,13 +29,17 @@ ridges, spurs and benches), sediment flux ``Qs`` and hillslope diffusivity
    which is unconditionally stable; n != 1 uses a per-node Newton iteration.
    Nodes are grouped by their depth in the receiver tree, so every group is
    independent and solved with one vectorised update;
-4. adds sediment deposition (Yuan et al. 2019) with a lagged, explicit sediment
-   flux: ``Qs`` is the accumulated net erosion of the previous step and
-   ``D = G Qs / A`` is fed into the next implicit solve as a source term.
-   Channel migration and avulsion spread it over the valley floor (a
-   mass-conserving scatter onto cells within a few metres of the local low
-   point), so lowland valleys, plains and lake floors fill with alluvium while
-   steep channels keep incising;
+4. adds sediment deposition (Yuan et al. 2019): ``D = G Qs / A`` with ``Qs``
+   the net sediment flux (upstream integral of incision minus deposition). It
+   is solved exactly for the step's incision in one donor-first pass over the
+   receiver tree and fed into the next implicit solve as a source term (so it
+   cannot oscillate, whatever ``G``). Locally D is about ``G/(1+G)`` of the
+   incision, which lowers net incision everywhere; where the flux from
+   upstream exceeds the local incision (plains below a mountain front, wide
+   low-gradient valley floors, lake inlets) the surface aggrades, while fast-
+   incising trunk channels keep a smaller share of their incision. Channel migration and avulsion spread
+   the alluvium over the valley floor (a mass-conserving scatter onto cells
+   within a few metres of the local low point);
 5. applies explicit hillslope diffusion with stable sub-steps, then threshold
    hillslopes (landsliding, Burbank et al. 1996; Montgomery & Brandon 2002):
    slopes steeper than a critical gradient that grows with rock hardness are
@@ -175,6 +179,24 @@ def _solve_implicit(h_src: np.ndarray, rec: np.ndarray, levels: list[np.ndarray]
     return h
 
 
+def _deposition(ero: np.ndarray, rec: np.ndarray, levels: list[np.ndarray], area: np.ndarray,
+                cell_area: float, G: float) -> np.ndarray:
+    """Deposition rate D (m/yr) of the Yuan et al. (2019) model for incision rates ``ero``.
+
+    ``D_i = G / A_i * (sum over the donors' outgoing flux + E_i a - D_i a)``: the outgoing
+    flux of each node (its incoming flux plus its own incision minus what it deposits)
+    feeds its receiver. Processing the receiver tree from the deepest level up makes each
+    level one vectorised update, and solving for ``D_i`` keeps it below the available
+    flux, so the outgoing flux is never negative."""
+    D = np.zeros_like(ero)
+    inflow = np.zeros_like(ero)
+    for g in reversed(levels):
+        tot = inflow[g] + ero[g] * cell_area
+        D[g] = G * tot / (area[g] + G * cell_area)
+        np.add.at(inflow, rec[g], tot - D[g] * cell_area)
+    return D
+
+
 def _diffuse(h: np.ndarray, fixed: np.ndarray, alpha: float) -> np.ndarray:
     """Explicit linear hillslope diffusion; ``alpha = kappa dt / dx^2`` split into stable sub-steps."""
     if alpha <= 0:
@@ -217,7 +239,10 @@ def _evolve(h: np.ndarray, ocean: np.ndarray, uplift: np.ndarray, fold, strata, 
     spread = max(0.0, float(fc.floodplain_m)) / spacing
     crit = max(0.0, float(fc.critical_slope))
     dep = np.zeros(h.size)           # deposition rate from the previous step's sediment flux (m/yr)
+    open_edge = border_mask(shape) & land
+    edge_top = h.copy()
     for _ in range(int(steps)):
+        prev = h
         flat = h.reshape(-1)
         rec, order, area, dist = flow_routing(h, ocean, spacing, rng, exponent)
         levels = _levels(order, rec)
@@ -227,11 +252,13 @@ def _evolve(h: np.ndarray, ocean: np.ndarray, uplift: np.ndarray, fold, strata, 
         src = flat + dt * (U + dep)
         new = _solve_implicit(src, rec, levels, F, fc.n)
         new = np.where(fixed_f, flat, new)
-        net = flat + dt * U - new                  # material removed this step (m), deposition included
         if G > 0:
-            # Yuan et al. (2019): Qs = integral of (U - dh/dt) dA, D = G Qs / A (used next step).
-            qs = accumulate(order, rec, net / dt * cell_area)
-            d = np.where(fixed_f, 0.0, G * np.maximum(qs, 0.0) / area).reshape(shape)
+            # Yuan et al. (2019): D = G Qs / A with Qs the net sediment flux, i.e. the upstream
+            # integral of (E - D). Solved exactly for this step's incision E in one donor-first
+            # pass; the previous code fed back the lagged D (factor -G per step), which
+            # oscillated with period 2 for G >= 1.
+            ero = np.where(fixed_f, 0.0, np.maximum(src - new, 0.0) / dt)
+            d = np.where(fixed_f, 0.0, _deposition(ero, rec, levels, area, cell_area, G)).reshape(shape)
             if spread > 0.3:
                 # Channel migration and avulsion spread the alluvium over the valley
                 # floor: a mass-conserving scatter onto the cells within a few metres
@@ -252,8 +279,27 @@ def _evolve(h: np.ndarray, ocean: np.ndarray, uplift: np.ndarray, fold, strata, 
         if iso > 0:
             loss = np.where(land, flat.reshape(shape) + dt * U.reshape(shape) - h, 0.0)
             h = h + np.where(movable, iso * blur(loss, flex) / land_w, 0.0)
+        if open_edge.any():
+            h = _open_border(h, prev, open_edge, edge_top)
         h = np.maximum(np.clip(h, lo, hi), floor)
     return h
+
+
+def _open_border(h: np.ndarray, prev: np.ndarray, edge: np.ndarray, top: np.ndarray) -> np.ndarray:
+    """Land border cells follow the change of their inward neighbour (corners the diagonal),
+    but never rise above their height at the start (``top``).
+
+    The border is the outlet of every river leaving the map, so it is held fixed in the
+    solve; without this it would never erode and would stand as a one-cell wall above the
+    incised ring next to it. An outlet that kept rising with uplift or rebound would lift
+    the base level and the whole region would climb, hence the cap."""
+    d = h - prev
+    inner = np.empty_like(d)
+    inner[1:-1, 1:-1] = 0.0
+    inner[0, :], inner[-1, :] = d[1, :], d[-2, :]
+    inner[:, 0], inner[:, -1] = d[:, 1], d[:, -2]
+    inner[0, 0], inner[0, -1], inner[-1, 0], inner[-1, -1] = d[1, 1], d[1, -2], d[-2, 1], d[-2, -2]
+    return np.where(edge, np.minimum(prev + inner, top), h)
 
 
 def _steepest(h: np.ndarray, spacing: float) -> np.ndarray:
