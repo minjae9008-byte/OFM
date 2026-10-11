@@ -21,13 +21,13 @@ model never acts on the world directly. Every proposal passes three gates:
    maximum |dz|, cumulative |dz| against the terrain at policy creation, the
    share of land cells changed by more than 0.5 m, any change inside
    forbidden cells and non-finite heights. A violation reverts just that action.
-4. **Rebuild** (``protect_rebuild``): the downstream simulations are global, so
-   an edit elsewhere can still re-pick procedural features, POIs and
-   vegetation in a protected area or reshape its detail terrain. After the
-   rebuilt candidate's detail stage, that content is restored from the last
-   accepted world (``restore_protected``); if protected terrain, water, caves or
-   the agents' spawn settlement still differ (``verify_rebuild``), the whole
-   candidate is discarded before it is evaluated.
+4. **Rebuild** (``protect_rebuild`` / ``RebuildGuard``): the downstream simulations
+   are global, so an edit elsewhere can still change a protected area's biome,
+   re-route a cave under it, re-pick its features, POIs and vegetation or
+   reshape its detail terrain. During the candidate's rebuild that content is
+   restored from the last accepted world, stage by stage; if protected terrain,
+   water, materials, caves or the agents' spawn settlement still differ
+   (``verify_rebuild``), the whole candidate is discarded before it is evaluated.
 
 Every decision is appended to an audit trail (``audit``), which the director
 stores in ``world.evaluation["ai_audit"]``. Quotas are counted per candidate
@@ -120,6 +120,7 @@ class ScopePolicy:
         self.feather_cells = max(2, int(round(FEATHER_M / self.cell)))
         self._forbidden = self.forbidden_mask(world)
         self._weight: np.ndarray | None = None
+        self._grown_mask: np.ndarray | None = None
         self.committed: Counter = Counter()
         self.pending: Counter = Counter()
         self._last_commit: Counter = Counter()
@@ -290,88 +291,51 @@ class ScopePolicy:
         return self._forbidden[j, i]
 
     def _vertex_weight(self, n: int, spacing: float) -> tuple[np.ndarray, np.ndarray]:
-        """Edit weight on the detail-terrain vertices (k * spacing) and their forbidden flag."""
-        c = np.arange(n) * spacing
-        k = np.minimum((c / self.cell).astype(int), self.size - 1)
-        f = self._forbidden[np.ix_(k, k)]
-        x = c / self.cell - 0.5
+        """Edit weight on the detail-terrain vertices (k * spacing) and their protected flag.
+
+        A vertex is protected when any cell it touches is forbidden, so the corners on the
+        far edges of a protected cell belong to it as well (otherwise the triangles inside
+        the protected area would tilt)."""
+        c = np.arange(n) * spacing / self.cell
+        lo = np.clip(np.ceil(c - 1e-9).astype(int) - 1, 0, self.size - 1)      # cell left of / below
+        hi = np.clip(np.floor(c + 1e-9).astype(int), 0, self.size - 1)         # cell right of / above
+        F = self._forbidden
+        f = F[np.ix_(lo, lo)] | F[np.ix_(lo, hi)] | F[np.ix_(hi, lo)] | F[np.ix_(hi, hi)]
+        x = c - 0.5
         w = bilinear(self.edit_weight(), x[None, :], x[:, None])
         return np.where(f, 0.0, w), f
 
-    def protect_rebuild(self, reference: World) -> Callable[[World], None]:
-        """Hook for ``rebuild(cand, protect=...)``: restore protected content from ``reference``
-        (the last accepted world), then raise ``ScopeViolation`` if any of it still differs."""
-        def hook(cand: World) -> None:
-            self.restore_protected(cand, reference)
-            ok, reason, stats = self.verify_rebuild(cand, reference)
-            if not ok:
-                raise ScopeViolation(reason, stats)
-        return hook
+    def protect_rebuild(self, reference: World) -> "RebuildGuard":
+        """Hook for ``rebuild(cand, protect=...)`` that keeps the protected content of
+        ``reference`` (the last accepted world); see ``RebuildGuard``."""
+        return RebuildGuard(self, reference)
 
-    def restore_protected(self, cand: World, ref: World) -> None:
-        """Put the protected content of ``ref`` back into a rebuilt ``cand``.
+    def _touches(self, cave) -> bool:
+        """Whether any passage point, chamber or entrance of a cave lies in (or within a
+        cell of) a forbidden cell."""
+        pts = []
+        if len(cave.segments):
+            seg = np.asarray(cave.segments)
+            pts += [seg[:, 0:2], seg[:, 3:5], 0.5 * (seg[:, 0:2] + seg[:, 3:5])]
+        if len(cave.chambers):
+            pts.append(np.asarray(cave.chambers)[:, 0:2])
+        if cave.entrances:
+            pts.append(np.array([[e["x"], e["y"]] for e in cave.entrances], dtype=np.float64))
+        if not pts:
+            return False
+        p = np.concatenate(pts)
+        i = np.clip((p[:, 0] / self.cell).astype(int), 0, self.size - 1)
+        j = np.clip((p[:, 1] / self.cell).astype(int), 0, self.size - 1)
+        return bool(self._grown()[j, i].any())
 
-        ``verify_edit`` only sees ``height_base``. Rebuilding re-runs global selections
-        (procedural features, POIs, vegetation) and the export-resolution detail pass, so an
-        edit elsewhere can move a spire or re-pick objects inside a protected area. Objects
-        anchored in forbidden cells are copied from the reference world and the detail
-        terrain is blended back over the same feathered band that fades out edits."""
-        if not self._forbidden.any():
-            return
-        if cand.hires is not None and ref.hires is not None and cand.hires.shape == ref.hires.shape:
-            w, _ = self._vertex_weight(cand.hires.shape[0], cand.hires_spacing)
-            cand.hires = ref.hires + w * (cand.hires - ref.hires)
-
-        def inside(o) -> bool:
-            return bool(self.in_forbidden(o.x, o.y)[0])
-
-        # features are renumbered; POI props that name a feature follow (old id -> new id per source)
-        feats, id_c, id_r = [], {}, {}
-        for f in cand.features:
-            if not inside(f):
-                id_c[f.id] = f.id = f"feature_{len(feats)}"
-                feats.append(f)
-        for f in ref.features:
-            if inside(f):
-                g = copy.deepcopy(f)
-                id_r[f.id] = g.id = f"feature_{len(feats)}"
-                feats.append(g)
-        pois = []
-        for p in ref.pois:
-            if inside(p):
-                q = copy.deepcopy(p)
-                q.props = [id_r.get(v, v) for v in q.props]
-                pois.append(q)
-        for p in cand.pois:
-            if not inside(p):
-                p.props = [id_c.get(v, v) for v in p.props]
-                pois.append(p)
-        # the agents spawn at the first settlement: keep the reference's spawn first
-        sp = next((p for p in ref.pois if p.kind == "settlement"), None)
-        if sp is not None:
-            k = next((k for k, p in enumerate(pois) if p.kind == "settlement"
-                      and abs(p.x - sp.x) < 1e-3 and abs(p.y - sp.y) < 1e-3), None)
-            if k is not None:
-                pois.insert(0, pois.pop(k))
-        for k, p in enumerate(pois):
-            p.id = f"poi_{k}"
-        cand.features, cand.pois = feats, pois
-        scatter = {}
-        for kind in sorted(set(cand.scatter) | set(ref.scatter)):
-            parts = []
-            a = cand.scatter.get(kind)
-            if a is not None and len(a):
-                parts.append(a[~self.in_forbidden(a[:, 0], a[:, 1])])
-            b = ref.scatter.get(kind)
-            if b is not None and len(b):
-                parts.append(b[self.in_forbidden(b[:, 0], b[:, 1])])
-            if parts:
-                scatter[kind] = np.concatenate(parts)
-        cand.scatter = scatter
+    def _grown(self) -> np.ndarray:
+        if self._grown_mask is None:
+            self._grown_mask = dilate(self._forbidden, 1) if self._forbidden.any() else self._forbidden
+        return self._grown_mask
 
     def verify_rebuild(self, cand: World, ref: World) -> tuple[bool, str, dict]:
-        """Post-condition of a rebuild: protected terrain, water, caves, objects and the spawn
-        settlement equal the reference. Returns (ok, reason, stats)."""
+        """Post-condition of a rebuild: protected terrain, water, materials, caves, objects and
+        the spawn settlement equal the reference. Returns (ok, reason, stats)."""
         problems: list[str] = []
         stats: dict[str, Any] = {}
         F = self._forbidden
@@ -382,12 +346,17 @@ class ScopePolicy:
             if not worst <= PROTECTED_TOLERANCE_M:
                 problems.append("terrain in protected cells changed" +
                                 (f" by {worst:.2f} m" if np.isfinite(worst) else " (non-finite)"))
-            if cand.hires is not None and ref.hires is not None and cand.hires.shape == ref.hires.shape:
-                _, fv = self._vertex_weight(cand.hires.shape[0], cand.hires_spacing)
-                d = np.abs(cand.hires - ref.hires)[fv]
-                if d.size and not float(np.max(np.where(np.isfinite(d), d, np.inf))) <= PROTECTED_TOLERANCE_M:
-                    problems.append("detail terrain in protected cells changed")
-            for name in ("ocean", "lake_mask", "river_mask"):
+            if cand.hires is not None and ref.hires is not None:
+                if cand.hires.shape != ref.hires.shape or abs(cand.hires_spacing - ref.hires_spacing) > 1e-9:
+                    problems.append("detail terrain resolution changed")
+                else:
+                    _, fv = self._vertex_weight(cand.hires.shape[0], cand.hires_spacing)
+                    d = np.abs(cand.hires - ref.hires)[fv]
+                    worst_v = float(np.max(np.where(np.isfinite(d), d, np.inf))) if d.size else 0.0
+                    if not worst_v <= PROTECTED_TOLERANCE_M:
+                        stats["protected_detail_delta_m"] = round(worst_v, 3) if np.isfinite(worst_v) else -1.0
+                        problems.append("detail terrain in protected cells changed")
+            for name in ("ocean", "lake_mask", "river_mask", "biome"):
                 a, b = getattr(cand, name), getattr(ref, name)
                 if a is not None and b is not None:
                     n = int((a[F] != b[F]).sum())
@@ -396,11 +365,11 @@ class ScopePolicy:
                         problems.append(f"{name.replace('_mask', '')} changed on {n} protected cell(s)")
 
             def caves(w: World) -> list:
-                return sorted((round(float(e["x"]), 1), round(float(e["y"]), 1), len(c.segments))
-                              for c in w.caves for e in c.entrances if self.in_forbidden(e["x"], e["y"])[0])
+                return sorted((c.id, len(c.segments), round(float(np.asarray(c.segments)[:, :6].sum()), 1)
+                               if len(c.segments) else 0.0) for c in w.caves if self._touches(c))
 
             if caves(cand) != caves(ref):
-                problems.append("caves entering protected cells changed")
+                problems.append("caves in protected cells changed")
 
             def objects(items) -> list:
                 return sorted((o.kind, round(float(o.x), 1), round(float(o.y), 1)) for o in items
@@ -503,3 +472,195 @@ class ScopePolicy:
                 "protected_regions": list(self.protected_regions), "protected_zones": self.zones(),
                 "used": used, "total_used": self.committed[_TOTAL], "audit_counts": dict(by_status),
                 "dry_run": bool(self.scope.dry_run), "warnings": list(self.warnings)}
+
+
+class RebuildGuard:
+    """Keeps the protected content of the last accepted world through a candidate's rebuild.
+
+    ``verify_edit`` only sees ``height_base``. The downstream simulations are global: climate
+    can turn a protected shrubland into grassland, the cave walk and the feature and POI
+    selections draw from map-wide random streams, and the detail pass reshapes terrain
+    everywhere. ``pipeline.rebuild`` therefore calls this hook at three stages, so that
+    everything computed afterwards already sees the restored content:
+
+    * ``surface`` (after caves and cliffs): biome, cliff masks and splat materials on
+      forbidden cells (splat blended over the feather band); caves whose passages touch a
+      forbidden cell are taken from the reference (with their ids), candidate caves touching
+      it are dropped; procedural features likewise, and candidate features whose footprint
+      reaches a forbidden cell or that crowd a restored one are dropped;
+    * ``terrain`` (after the detail heightfield): protected vertices (corners included) take
+      the reference heights, blended over the feather band; river ribbons are cleared again
+      without touching protected vertices. Vegetation and POIs are placed after this, so
+      their heights match the exported terrain;
+    * ``objects`` (after vegetation and POIs): vegetation and POIs in forbidden cells come
+      from the reference (the spawn settlement stays first); then ``verify_rebuild`` runs and
+      a ``ScopeViolation`` aborts the rebuild before the candidate is evaluated.
+    """
+
+    FEATURE_SPACING_M = 400.0      # place_procedural_features keeps procedural features this far apart
+
+    def __init__(self, policy: ScopePolicy, reference: World):
+        self.policy = policy
+        self.ref = reference
+
+    def __call__(self, world: World, stage: str = "objects") -> None:
+        if stage == "surface":
+            self.surface(world)
+        elif stage == "terrain":
+            self.terrain(world)
+        elif stage == "objects":
+            self.objects(world)
+            ok, reason, stats = self.policy.verify_rebuild(world, self.ref)
+            if not ok:
+                raise ScopeViolation(reason, stats)
+
+    # -- stages -------------------------------------------------------------------------
+    def surface(self, cand: World) -> None:
+        pol, ref = self.policy, self.ref
+        F = pol._forbidden
+        if not F.any():
+            return
+        for name in ("biome", "cliff_mask", "coast_cliff"):
+            a, b = getattr(cand, name), getattr(ref, name)
+            if a is not None and b is not None and a.shape == b.shape:
+                a = a.copy()
+                a[F] = b[F]
+                setattr(cand, name, a)
+        if cand.splat is not None and ref.splat is not None and cand.splat.shape == ref.splat.shape:
+            w = pol.edit_weight()[..., None]
+            cand.splat = ref.splat + w * (cand.splat - ref.splat)
+        self._caves(cand)
+        self._features(cand)
+
+    def terrain(self, cand: World) -> None:
+        pol, ref = self.policy, self.ref
+        if not pol._forbidden.any() or cand.hires is None or ref.hires is None:
+            return
+        if cand.hires.shape != ref.hires.shape or abs(cand.hires_spacing - ref.hires_spacing) > 1e-9:
+            return                                   # verify_rebuild reports the resolution change
+        w, fv = pol._vertex_weight(cand.hires.shape[0], cand.hires_spacing)
+        h = ref.hires + w * (cand.hires - ref.hires)
+        if cand.rivers:
+            from ..detail.hires import _river_samples, clear_ribbons
+            sp = cand.hires_spacing
+            h = clear_ribbons(h, _river_samples(cand, sp * 0.25, sp, vertices=True), sp, step=sp * 0.25,
+                              frozen=fv)
+        cand.hires = h
+
+    def objects(self, cand: World) -> None:
+        pol, ref = self.policy, self.ref
+        if not pol._forbidden.any():
+            return
+
+        def inside(o) -> bool:
+            return bool(pol.in_forbidden(o.x, o.y)[0])
+
+        pois = [self._remap_poi(copy.deepcopy(p), cand) for p in ref.pois if inside(p)]
+        pois += [p for p in cand.pois if not inside(p)]
+        sp = next((p for p in ref.pois if p.kind == "settlement"), None)
+        if sp is not None:          # the agents spawn at the first settlement: keep the reference's first
+            k = next((k for k, p in enumerate(pois) if p.kind == "settlement"
+                      and abs(p.x - sp.x) < 1e-3 and abs(p.y - sp.y) < 1e-3), None)
+            if k is not None:
+                pois.insert(0, pois.pop(k))
+        for k, p in enumerate(pois):
+            p.id = f"poi_{k}"
+        cand.pois = pois
+        scatter = {}
+        for kind in sorted(set(cand.scatter) | set(ref.scatter)):
+            parts = []
+            a = cand.scatter.get(kind)
+            if a is not None and len(a):
+                parts.append(a[~pol.in_forbidden(a[:, 0], a[:, 1])])
+            b = ref.scatter.get(kind)
+            if b is not None and len(b):
+                parts.append(b[pol.in_forbidden(b[:, 0], b[:, 1])])
+            if parts:
+                scatter[kind] = np.concatenate(parts)
+        cand.scatter = scatter
+
+    # -- helpers ------------------------------------------------------------------------
+    def _caves(self, cand: World) -> None:
+        pol, ref = self.policy, self.ref
+        restored = [copy.deepcopy(c) for c in ref.caves if pol._touches(c)]
+        kept = [c for c in cand.caves if not pol._touches(c)]
+        if not restored and len(kept) == len(cand.caves):
+            return
+        for c in restored:
+            # passages outside the protected cells may now lie under edited ground: they must
+            # keep their cover (or, if they had less, not lose any), else the rebuild fails
+            self._check_cover(c, cand, ref)
+            for e in c.entrances:
+                if not pol.in_forbidden(e["x"], e["y"])[0]:
+                    e["z"] = round(float(cand.height_at(e["x"], e["y"])), 2)
+        used = {c.id for c in restored}
+        n = 0
+        for c in kept:
+            if c.id in used:
+                while f"cave_{n}" in used or any(k.id == f"cave_{n}" for k in kept):
+                    n += 1
+                c.id = f"cave_{n}"
+            used.add(c.id)
+        cand.caves = kept + restored
+
+    def _check_cover(self, cave, cand: World, ref: World, min_cover: float = 1.0) -> None:
+        seg = np.asarray(cave.segments)
+        if not len(seg):
+            return
+        mid = 0.5 * (seg[:, 0:3] + seg[:, 3:6])
+        out = ~self.policy.in_forbidden(mid[:, 0], mid[:, 1])
+        if cave.entrances:
+            ent = np.array([[e["x"], e["y"]] for e in cave.entrances])
+            near = np.min(np.hypot(mid[:, None, 0] - ent[None, :, 0], mid[:, None, 1] - ent[None, :, 1]), axis=1)
+            out &= near > 40.0                 # the passage rises to the surface at its mouths
+        if not out.any():
+            return
+        sel = mid[out]
+        new = cand.height_at(sel[:, 0], sel[:, 1]) - sel[:, 2]
+        old = ref.height_at(sel[:, 0], sel[:, 1]) - sel[:, 2]
+        if (new < np.minimum(old, min_cover) - 0.05).any():
+            raise ScopeViolation(f"protected cave {cave.id} would lose its rock cover outside the protected area",
+                                 {"min_cover_m": round(float(new.min()), 2)})
+
+    def _features(self, cand: World) -> None:
+        from .actions import FOOTPRINT_M
+        pol, ref = self.policy, self.ref
+
+        def inside(f) -> bool:
+            return bool(pol.in_forbidden(f.x, f.y)[0])
+
+        restored = [copy.deepcopy(f) for f in ref.features if inside(f)]
+        kept = []
+        for f in cand.features:
+            if inside(f):
+                continue
+            reach = FOOTPRINT_M.get(f.kind, 40.0)
+            if pol.site_mask(reach)[min(int(f.y / pol.cell), pol.size - 1), min(int(f.x / pol.cell), pol.size - 1)]:
+                continue                       # its footprint would reach into the protected area
+            if f.source == "procedural" and any(np.hypot(f.x - r.x, f.y - r.y) < self.FEATURE_SPACING_M
+                                                for r in restored if r.source == "procedural"):
+                continue                       # crowds a restored feature (procedural spacing)
+            kept.append(f)
+        used = {f.id for f in restored}
+        n = 0
+        for f in kept:
+            while f"feature_{n}" in used:
+                n += 1
+            f.id = f"feature_{n}"
+            used.add(f.id)
+        cand.features = kept + restored
+
+    def _remap_poi(self, p, cand: World):
+        """Point a restored POI's lake / waterfall reference at the candidate's object there."""
+        if p.kind == "lakeshore" and p.props and cand.lakes:
+            ref_lake = next((lk for lk in self.ref.lakes if lk["id"] == p.props[0]), None)
+            if ref_lake is not None and "center" in ref_lake:
+                cx, cy = ref_lake["center"]
+                best = min(cand.lakes, key=lambda lk: np.hypot(lk["center"][0] - cx, lk["center"][1] - cy))
+                if np.hypot(best["center"][0] - cx, best["center"][1] - cy) < 2 * self.policy.cell:
+                    p.props = [best["id"]] + list(p.props[1:])
+        if p.kind == "waterfall" and p.props and cand.waterfalls:
+            best = min(cand.waterfalls, key=lambda f: np.hypot(f["x"] - p.x, f["y"] - p.y))
+            if np.hypot(best["x"] - p.x, best["y"] - p.y) < self.policy.cell:
+                p.props = [best["id"]] + list(p.props[1:])
+        return p

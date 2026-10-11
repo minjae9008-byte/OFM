@@ -63,7 +63,8 @@ ACTION_DOC = action_doc()
 # Config keys a model may never set, whatever param_ranges says: its own sandbox, objective
 # weight and budget ("ai."), the exporter, and the grid identity the world arrays depend on.
 DENIED_PARAM_PREFIXES = ("ai.", "export.")
-DENIED_PARAMS = ("world.seed", "world.size", "world.cell_size", "evaluation.region_divs")
+# keys that change the grid or the region names would also invalidate the protection masks
+DENIED_PARAMS = ("world.seed", "world.size", "world.cell_size", "evaluation.region_divs", "detail.upscale")
 
 
 def param_settable(path: str) -> bool:

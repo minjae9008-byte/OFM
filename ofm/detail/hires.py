@@ -313,13 +313,15 @@ def open_channels(h: np.ndarray, rf: RiverField | None, water_w: np.ndarray, spa
 
 
 def clear_ribbons(h: np.ndarray, samples: np.ndarray | None, spacing: float,
-                  clearance: float = 0.1, step: float = 0.0, iterations: int = 8) -> np.ndarray:
+                  clearance: float = 0.1, step: float = 0.0, iterations: int = 8,
+                  frozen: np.ndarray | None = None) -> np.ndarray:
     """Lower the four nodes around any centreline sample whose bilinear terrain would
     reach the water surface, so the river ribbon is never blocked.
 
     Between two samples ``step`` apart the water falls by up to gradient * step, so the
     clearance grows with the local water gradient (column 5 of the samples); lowering
-    nodes can lift nothing, but neighbouring samples share nodes, so it iterates."""
+    nodes can lift nothing, but neighbouring samples share nodes, so it iterates. Nodes marked
+    ``frozen`` (protected terrain) are never lowered."""
     if samples is None or not len(samples):
         return h
     n = h.shape[0]
@@ -339,7 +341,10 @@ def clear_ribbons(h: np.ndarray, samples: np.ndarray | None, spacing: float,
         for dj in (0, 1):
             for di in (0, 1):
                 jj, ii = j0[hit] + dj, i0[hit] + di
-                np.minimum.at(out, (jj, ii), out[jj, ii] - excess[hit])
+                low = out[jj, ii] - excess[hit]
+                if frozen is not None:
+                    low = np.where(frozen[jj, ii], out[jj, ii], low)
+                np.minimum.at(out, (jj, ii), low)
     return out
 
 

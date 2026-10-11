@@ -91,21 +91,30 @@ def _agent_rows(world: World) -> list[dict]:
             for a in world.psych.get("agents", [])]
 
 
+def available_actions(policy: ScopePolicy) -> list[str]:
+    """Actions that could pass the policy now: allowed, quota left, and a region (or, for
+    set_param, a configured range) to use. Schema and prompt example both use this list."""
+    return [a for a in policy.allowed_actions if policy.remaining(a) > 0
+            and (policy.param_ranges if a == "set_param" else policy.allowed_regions)]
+
+
 def _instructions(world: World, policy: ScopePolicy, max_actions: int, language: str) -> str:
     lang = {"ko": "Korean", "en": "English", "ja": "Japanese"}.get(language, language)
     n = world.region_divs
     score_fields = ", ".join('"%s": 0-10' % k for k in SCORE_KEYS)
-    # the example must itself be in scope: a hard-coded region steers small models out of it
+    # the example must itself be in scope (allowed, quota left, a region or range to use):
+    # small models copy it, and a hard-coded region steers them out of the sandbox
+    usable = available_actions(policy)
     example = None
     if policy.allowed_regions:
         region = policy.allowed_regions[0]
-        if "add_poi" in policy.allowed_actions:
+        if "add_poi" in usable:
             example = {"type": "add_poi", "region": region, "kind": "ruin", "reason": "..."}
         else:
-            t = next((a for a in policy.allowed_actions if a != "set_param"), None)
+            t = next((a for a in usable if a != "set_param"), None)
             if t is not None:
                 example = {"type": t, "region": region, "reason": "..."}
-    if example is None and "set_param" in policy.allowed_actions and policy.param_ranges:
+    if example is None and "set_param" in usable:
         path, (lo, hi) = next(iter(policy.param_ranges.items()))
         example = {"type": "set_param", "path": path, "value": round((lo + hi) / 2, 3), "reason": "..."}
     if example is None or max_actions <= 0:
@@ -445,10 +454,7 @@ def _llm_review(world: World, llm: LocalLLM, rejected: list[str], policy: ScopeP
                 max_actions: int) -> dict | None:
     ai = world.cfg.ai
     regions = world.all_regions()
-    # only actions that could pass the policy: region actions need an allowed region,
-    # set_param needs a configured range
-    types = [a for a in policy.allowed_actions if policy.remaining(a) > 0
-             and (policy.param_ranges if a == "set_param" else policy.allowed_regions)]
+    types = available_actions(policy)
     schema = review_schema(SCORE_KEYS, types, policy.allowed_regions, LANDMARK_KINDS, POI_KINDS,
                            list(policy.param_ranges), max_actions if types else 0)
     prompt, pinfo = build_prompt_info(world, rejected, max_actions, ai.language, policy,

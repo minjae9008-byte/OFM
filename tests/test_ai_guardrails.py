@@ -90,15 +90,23 @@ def test_policy_normalises_and_fails_closed(small_world):
 
 
 def test_set_param_cannot_leave_an_invalid_config(small_world):
-    w = _world(small_world, param_ranges=[ParamRange("detail.upscale", 1, 4)])
+    w = _world(small_world, param_ranges=[ParamRange("fluvial.resolution_divisor", 1, 4)])
+    w.cfg = copy.deepcopy(w.cfg)
     pol = ScopePolicy(w.cfg.ai.scope, w)
-    a = validate_action({"type": "set_param", "path": "detail.upscale", "value": 3}, w.all_regions(),
-                        pol.param_ranges)
+    a = validate_action({"type": "set_param", "path": "fluvial.resolution_divisor", "value": 3},
+                        w.all_regions(), pol.param_ranges)
     assert pol.check(a)[0]
-    before = w.cfg.detail.upscale
+    before = w.cfg.fluvial.resolution_divisor
     with pytest.raises(ActionError, match="invalid"):
         apply_action(w, a, np.random.default_rng(0), pol)
-    assert w.cfg.detail.upscale == before
+    assert w.cfg.fluvial.resolution_divisor == before
+
+
+def test_grid_changing_params_are_never_settable(small_world):
+    # detail.upscale changes the detail grid, which the protection masks are built on
+    w = _world(small_world, param_ranges=[ParamRange("detail.upscale", 1, 4)])
+    pol = ScopePolicy(w.cfg.ai.scope, w)
+    assert "detail.upscale" not in pol.param_ranges and pol.warnings
 
 
 def test_add_lake_with_unbounded_cut_stays_finite(small_world):
@@ -266,9 +274,10 @@ def test_director_discards_candidates_that_change_protected_content(mid_world, m
     real = director_mod.rebuild
 
     def flooding_rebuild(world, progress=None, psych=True, protect=None):
-        def hook(cand):
-            cand.ocean = np.ones_like(cand.ocean)    # the edit "drowned" everything, protected cells too
-            protect(cand)
+        def hook(cand, stage):
+            if stage == "objects":
+                cand.ocean = np.ones_like(cand.ocean)    # the edit "drowned" everything, protected cells too
+            protect(cand, stage)
         return real(world, progress, psych, protect=hook)
 
     monkeypatch.setattr(director_mod, "rebuild", flooding_rebuild)
@@ -280,3 +289,131 @@ def test_director_discards_candidates_that_change_protected_content(mid_world, m
     assert not any(e["status"] == "applied" for e in audit)
     assert out.evaluation["ai_scope"]["total_used"] == 0
     assert np.array_equal(out.height_base, mid_world.height_base)
+
+
+# -- review round 2: attacks on the rebuild protection ----------------------------------------
+@pytest.fixture(scope="module")
+def cave_world():
+    """Seed 7 at 128 cells: a karst cave runs under region C2."""
+    from ofm.pipeline import generate
+    from tests.conftest import small_config
+    return generate(small_config(**{"world.size": 128, "world.seed": 7}))
+
+
+def _guarded_rebuild(w0, action, **scope):
+    w = _scoped(w0, **scope)
+    pol = ScopePolicy(w.cfg.ai.scope, w)
+    cand = _scoped(w)
+    apply_action(cand, validate_action(action, w.all_regions()), np.random.default_rng(0), pol)
+    rebuild(cand, psych=False, protect=pol.protect_rebuild(w))
+    return w, pol, cand
+
+
+def test_objects_in_the_blend_band_sit_on_the_exported_terrain(mid_world):
+    from ofm.grid import bilinear
+    w, pol, cand = _guarded_rebuild(mid_world, {"type": "smooth_terrain", "region": "B2", "amount": 0.8},
+                                    protected_regions=["B3"])
+    sp = cand.hires_spacing
+    wgt = pol.edit_weight()
+    for arr in cand.scatter.values():
+        if not len(arr):
+            continue
+        i = np.clip((arr[:, 0] / pol.cell).astype(int), 0, pol.size - 1)
+        j = np.clip((arr[:, 1] / pol.cell).astype(int), 0, pol.size - 1)
+        band = (wgt[j, i] < 1.0) & ~pol.in_forbidden(arr[:, 0], arr[:, 1])
+        ground = bilinear(cand.hires, arr[band, 0] / sp, arr[band, 1] / sp)
+        assert np.abs(arr[band, 2] - ground).max(initial=0.0) < 0.25
+    for p in cand.pois:
+        if p.kind != "cave_entrance":            # a cave mouth keeps the passage's own height
+            assert abs(p.z - float(bilinear(cand.hires, p.x / sp, p.y / sp))) < 0.25, p.kind
+
+
+def test_protected_cells_keep_every_detail_vertex_and_material(mid_world):
+    from ofm.grid import bilinear
+    w, pol, cand = _guarded_rebuild(mid_world, {"type": "raise_relief", "region": "C3", "amount": 0.5},
+                                    protected_regions=["B3"])
+    F = pol.forbidden_mask()
+    jj, ii = np.nonzero(F)
+    # corners and centres of every protected cell, on the exported heightmap
+    for dx, dy in ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0), (0.5, 0.5)):
+        x, y = (ii + dx) * pol.cell / cand.hires_spacing, (jj + dy) * pol.cell / cand.hires_spacing
+        assert np.abs(bilinear(cand.hires, x, y) - bilinear(w.hires, x, y)).max() < 1e-6
+    assert np.array_equal(cand.biome[F], w.biome[F])
+    assert np.abs(cand.splat[F] - w.splat[F]).max() < 1e-9
+
+
+def test_caves_under_protected_cells_are_kept(cave_world):
+    w, pol, cand = _guarded_rebuild(cave_world, {"type": "smooth_terrain", "region": "A1", "amount": 0.25},
+                                    protected_regions=["C2"])
+
+    def touching(world):
+        return {c.id: np.asarray(c.segments).round(3).tolist() for c in world.caves if pol._touches(c)}
+
+    assert touching(w), "the test world needs a cave under C2"
+    assert touching(cand) == touching(w)
+    ids = [c.id for c in cand.caves]
+    assert len(ids) == len(set(ids))
+    for p in cand.pois:
+        if p.kind == "cave_entrance":
+            assert p.props[0] in ids
+
+
+def test_features_next_to_a_protected_area_keep_out_of_it(mid_world):
+    from ofm.ai.actions import FOOTPRINT_M
+    from ofm.ai.scope import RebuildGuard
+    from ofm.volume.features import make_feature
+    w = _scoped(mid_world, protected_regions=["B3"])
+    pol = ScopePolicy(w.cfg.ai.scope, w)
+    F = pol.forbidden_mask()
+    jj, ii = np.nonzero(F)
+    # just outside the western edge of B3, close enough for an arch footprint to reach in
+    x = (ii.min() - 1 + 0.5) * pol.cell
+    y = float(np.median(jj) + 0.5) * pol.cell
+    cand = _scoped(w)
+    arch = make_feature(cand, "arch", x, y, np.random.default_rng(0))
+    arch.source = "procedural"
+    cand.features = list(cand.features) + [arch]
+    RebuildGuard(pol, w).surface(cand)
+    assert all(np.hypot(f.x - x, f.y - y) > 1.0 for f in cand.features), "the arch would reach into B3"
+    assert FOOTPRINT_M["arch"] > pol.cell
+    ids = [f.id for f in cand.features]
+    assert len(ids) == len(set(ids))
+
+
+def test_a_rebuild_without_edits_reproduces_the_world(mid_world):
+    w = _scoped(mid_world)
+    before = [(p.kind, p.x, p.y) for p in w.pois]
+    rebuild(w, psych=True)
+    assert [(p.kind, p.x, p.y) for p in w.pois] == before
+    assert w.evaluation["simulation"]["scores"] == mid_world.evaluation["simulation"]["scores"]
+
+
+def test_a_schema_valid_reply_beats_a_repair_that_lost_a_key(small_world, server):
+    w = _world(small_world)
+    no_region = {"type": "add_poi", "kind": "ruin", "reason": "x"}
+    good = {"type": "add_poi", "region": "B2", "kind": "ruin", "reason": "x"}
+    _Handler.replies = [_reply([good, no_region, no_region], overall=9.0), {"critique": "c", "actions": []}]
+    r = review(w, _llm(server, retries=1), [], ScopePolicy(w.cfg.ai.scope, w))
+    assert r["llm"]["scores"] is not None and r["llm"]["scores"]["overall"] == 9.0
+    assert [a["region"] for a in r["llm"]["actions"]] == ["B2"]
+
+
+def test_prompt_example_skips_actions_without_quota(small_world, server):
+    w = _world(small_world)
+    w.cfg = copy.deepcopy(w.cfg)
+    w.cfg.ai.scope.limits.add_poi = 0
+    pol = ScopePolicy(w.cfg.ai.scope, w)
+    review(w, _llm(server), [], pol)
+    body = _posts()[-1][1]
+    assert "add_poi" not in body["format"]["properties"]["actions"]["items"]["properties"]["type"]["enum"]
+    assert '"type": "add_poi"' not in body["messages"][1]["content"]
+
+
+def test_truncated_wrappers_and_numbers():
+    from ofm.ai.llm import json_candidates
+    cands = json_candidates('{"review": {"scores": {"overall": 7}, "critique": "c", "actions": []}')
+    assert {"scores": {"overall": 7}, "critique": "c", "actions": []} in cands
+    assert salvage_object('{"a": 1, "n": 1.') == {"a": 1}
+    assert salvage_object('{"a": 1, "n": 12e') == {"a": 1}
+    assert salvage_object('{"a": 1 "b": 2, "c": 3') is None
+    assert salvage_object('{"a": "x", "b": {"c": 1}') == {"a": "x", "b": {"c": 1}}

@@ -49,63 +49,86 @@ OPENAI_DEFAULTS = ["http://localhost:1234", "http://localhost:8080", "http://loc
 
 def extract_json(text: str) -> dict | None:
     """Return the first JSON object in ``text`` (handles code fences and chatter)."""
+    cands = json_candidates(text)
+    return cands[0] if cands else None
+
+
+def json_candidates(text: str, limit: int = 6) -> list[dict]:
+    """JSON objects that ``text`` may mean, most likely first.
+
+    A clean reply (or a fenced block) gives one object. Otherwise every balanced object is a
+    candidate, scanning from the first ``{``; when an object never closes (the reply was cut
+    off at the output token limit) its complete members are salvaged as a candidate too,
+    before the objects nested inside it. ``chat_json`` keeps the candidate that validates
+    best, so a truncated wrapper does not hide a complete payload inside it and vice versa."""
     if not text:
-        return None
+        return []
     text = text.strip()
     fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
-    candidates = [fence.group(1)] if fence else []
-    candidates.append(text)
-    for cand in candidates:
+    sources = [fence.group(1)] if fence else []
+    sources.append(text)
+    out: list[dict] = []
+    for src in sources:
         try:
-            obj = json.loads(cand)
+            obj = json.loads(src)
             if isinstance(obj, dict):
-                return obj
+                return [obj]
         except (json.JSONDecodeError, ValueError):
             pass
-        start = cand.find("{")
-        first = start
-        while start >= 0:
-            depth = 0
-            in_str = False
-            esc = False
-            for i in range(start, len(cand)):
-                ch = cand[i]
-                if in_str:
-                    if esc:
-                        esc = False
-                    elif ch == "\\":
-                        esc = True
-                    elif ch == '"':
-                        in_str = False
+        start = src.find("{")
+        while start >= 0 and len(out) < limit:
+            end = _balanced_end(src, start)
+            if end is None:
+                part = salvage_object(src, start)
+                if part:
+                    out.append(part)
+                start = src.find("{", start + 1)        # look inside the unterminated object
+                continue
+            try:
+                obj = json.loads(src[start:end + 1])
+                if isinstance(obj, dict):
+                    out.append(obj)
+                    start = src.find("{", end + 1)      # skip its nested objects
                     continue
-                if ch == '"':
-                    in_str = True
-                elif ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0:
-                        try:
-                            obj = json.loads(cand[start:i + 1])
-                            if isinstance(obj, dict):
-                                return obj
-                        except (json.JSONDecodeError, ValueError):
-                            pass
-                        break
-            else:
-                if start == first:
-                    # the outermost object never closes: the reply was cut off (output token
-                    # limit). Keep its complete members instead of falling back to the first
-                    # nested object, which would lose everything else.
-                    part = salvage_object(cand, start)
-                    if part:
-                        return part
-            start = cand.find("{", start + 1)
+            except (json.JSONDecodeError, ValueError):
+                pass
+            start = src.find("{", start + 1)
+        if out:
+            break
+    return out
+
+
+def _balanced_end(text: str, start: int) -> int | None:
+    """Index of the brace closing the object that opens at ``start`` (strings respected)."""
+    depth = 0
+    in_str = esc = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i
     return None
 
 
 def salvage_object(text: str, start: int = 0) -> dict | None:
-    """Complete ``"key": value`` members of a JSON object that is truncated after them."""
+    """Complete ``"key": value`` members of a JSON object that is truncated after them.
+
+    A member counts when a ``,`` or ``}`` follows its value, or when the text ends right
+    after a complete string, object or array; a number cut at the end ("3" of "35", "1." of
+    "1.5") or a missing comma ends the salvage."""
     dec = json.JSONDecoder()
     i = text.find("{", start)
     if i < 0:
@@ -113,26 +136,37 @@ def salvage_object(text: str, start: int = 0) -> dict | None:
     out: dict = {}
     i += 1
     n = len(text)
+
+    def skip(k: int) -> int:
+        while k < n and text[k] in " \t\r\n":
+            k += 1
+        return k
+
     while True:
-        while i < n and text[i] in " \t\r\n,":
-            i += 1
+        i = skip(i)
         if i >= n or text[i] != '"':
             break
         try:
             key, i = dec.raw_decode(text, i)
-            while i < n and text[i] in " \t\r\n":
-                i += 1
+            i = skip(i)
             if i >= n or text[i] != ":":
                 break
-            i += 1
-            while i < n and text[i] in " \t\r\n":
-                i += 1
-            value, i = dec.raw_decode(text, i)
+            value, i = dec.raw_decode(text, skip(i + 1))
         except (json.JSONDecodeError, ValueError):
             break
-        if i >= n and isinstance(value, (int, float)) and not isinstance(value, bool):
-            break                   # a number at the cut may itself be truncated ("3" of "35")
+        i = skip(i)
+        if i >= n:
+            # cut right after the value: strings, objects and arrays are complete, a number
+            # may not be ("3" of "35")
+            if not (isinstance(value, (int, float)) and not isinstance(value, bool)):
+                out[key] = value
+            break
+        if text[i] not in ",}":
+            break                   # "1." of "1.5", or a missing comma
         out[key] = value
+        if text[i] == "}":
+            break
+        i += 1
     return out or None
 
 
@@ -309,6 +343,19 @@ class LocalLLM:
                 return str(out.get("message", {}).get("content", ""))
             return str(out["choices"][0]["message"]["content"])
 
+    @staticmethod
+    def _judge(obj: dict, schema: dict | None, check) -> tuple[list[str], tuple[int, int]]:
+        """Errors of one parsed reply and its rank: schema errors first, then semantic ones,
+        so a schema-valid reply with a malformed action beats a repair that lost a key."""
+        errors = validate_schema(obj, schema) if schema is not None else []
+        sem: list[str] = []
+        if check is not None and not errors:
+            try:
+                sem = list(check(obj))[:12]
+            except Exception as exc:      # a checker bug must not abort the request
+                sem = [f"reply could not be checked ({type(exc).__name__})"]
+        return (errors or sem), (len(errors), len(sem))
+
     def chat_json(self, system: str, user: str, images: list[bytes] | None = None, schema: dict | None = None,
                   seed: int | None = None, name: str = "ofm_reply", retries: int | None = None,
                   temperature: float | None = None,
@@ -339,6 +386,7 @@ class LocalLLM:
         retries = self.scope.retries if retries is None else retries
         best: dict | None = None
         best_errors: list[str] = []
+        best_rank: tuple[int, int] = (1 << 30, 1 << 30)
         for attempt in range(1 + max(0, int(retries))):
             if not self._check_budget():
                 self.last_error = self.exhausted_reason
@@ -354,18 +402,13 @@ class LocalLLM:
             if attempt:
                 self.repairs += 1
                 self.last_info["repairs"] += 1
-            obj = extract_json(text)
-            if obj is None:
-                errors = ["the reply is not a JSON object"]
-            else:
-                errors = validate_schema(obj, schema) if schema is not None else []
-                if check is not None and not errors:
-                    try:
-                        errors = list(check(obj))[:12]
-                    except Exception as exc:      # a checker bug must not abort the request
-                        errors = [f"reply could not be checked ({type(exc).__name__})"]
-                if best is None or len(errors) < len(best_errors):
-                    best, best_errors = obj, errors
+            obj, errors, rank = None, ["the reply is not a JSON object"], None
+            for cand in json_candidates(text):
+                c_errors, c_rank = self._judge(cand, schema, check)
+                if rank is None or c_rank < rank:
+                    obj, errors, rank = cand, c_errors, c_rank
+            if obj is not None and (best is None or rank < best_rank):
+                best, best_errors, best_rank = obj, errors, rank
             if obj is not None and not errors:
                 self.last_info.update(valid=True, errors=[])
                 self.last_error = ""

@@ -69,12 +69,14 @@ def generate_base(cfg: OFMConfig, progress: Progress | None = None) -> World:
 
 
 def rebuild(world: World, progress: Progress | None = None, psych: bool = True,
-            protect: Callable[[World], None] | None = None) -> World:
+            protect: Callable[[World, str], None] | None = None) -> World:
     """Recompute every stage downstream of ``world.height_base``.
 
-    ``protect`` runs after the detail stage and before evaluation: the AI director uses it to
-    put protected content back (``ScopePolicy.protect_rebuild``) and to abort the rebuild by
-    raising when protected terrain or water changed anyway."""
+    ``protect(world, stage)`` is called after caves and cliffs (``"surface"``), after the detail
+    heightfield (``"terrain"``) and after vegetation and POIs (``"objects"``), before any
+    evaluation: the AI director uses it to put protected content back
+    (``ScopePolicy.protect_rebuild``) and to abort the rebuild by raising when protected terrain
+    or water changed anyway."""
     from .detail.amplify import amplify
     from .detail.pois import place_pois
     from .detail.scatter import scatter_vegetation
@@ -124,12 +126,16 @@ def rebuild(world: World, progress: Progress | None = None, psych: bool = True,
         world.features = place_procedural_features(world) + user_feats
         for k, f in enumerate(world.features):
             f.id = f"feature_{k}"
+        if protect is not None:
+            protect(world, "surface")
     with _stage(world, "detail", progress):
         world.hires, world.hires_spacing = amplify(world)
+        if protect is not None:
+            protect(world, "terrain")
         world.scatter = scatter_vegetation(world)
         world.pois = place_pois(world)
     if protect is not None:
-        protect(world)
+        protect(world, "objects")
     if cfg.quality.enabled:
         from .quality.metrics import analyze_terrain
         with _stage(world, "quality", progress):
