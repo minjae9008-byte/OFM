@@ -50,7 +50,7 @@ def place_procedural_features(world) -> list:
             if not far(x, y):
                 continue
             f = make_feature(world, kind, x, y, rng, scale)
-            if not f.stands_dry(world):
+            if not f.stands_dry(world) or f.crowds_cave_mouth(world):
                 continue
             f.id = f"feature_{len(world.features) + len(feats)}"
             feats.append(f)

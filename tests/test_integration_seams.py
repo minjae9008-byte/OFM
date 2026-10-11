@@ -242,6 +242,7 @@ def test_landforms_reach_below_the_ground_under_their_footprint(small_world, lak
             x, y = f.footprint()
             assert f.z - f.foot <= float(w.ground_at(x, y).min()) - 2.0 + 1e-6, f.id
             assert f.stands_dry(w), f"{f.id} walls off water"
+            assert not f.crowds_cave_mouth(w), f"{f.id} walls up a cave mouth"
 
 
 def test_arch_legs_stand_on_a_slope():

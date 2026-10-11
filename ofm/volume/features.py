@@ -76,6 +76,16 @@ class Feature:
         wet = world.water | world.river_mask if world.river_mask is not None else world.water
         return not bool(wet[j, i].any())
 
+    def crowds_cave_mouth(self, world, margin: float = 8.0) -> bool:
+        """True if the rock would come within ``margin`` metres of a cave mouth: the
+        landform is unioned into the volume after the caves are carved, so it would wall
+        the mouth up."""
+        for cave in world.caves:
+            for e in cave.entrances:
+                if self.sdf(np.array([e["x"]]), np.array([e["y"]]), np.array([e["z"] + 1.5]))[0] < margin:
+                    return True
+        return False
+
     def approach(self, world) -> tuple[float, float] | None:
         """A dry point a walker can stand on to visit the landform (its POI): under an
         arch's span, else at the foot just outside the rock on the side most level with
@@ -190,6 +200,11 @@ def rock_at(world, x, y, clearance: float = 1.5) -> np.ndarray:
             if m.any():
                 out[m] |= f.sdf(x[m], y[m], z[m]) < 0
     return out.reshape(shape)
+
+
+def near_rock(world, x: float, y: float, z: float, margin: float = 8.0) -> bool:
+    """True if a rock landform comes within ``margin`` metres of (x, y, z)."""
+    return any(f.sdf(np.array([x]), np.array([y]), np.array([z]))[0] < margin for f in world.features)
 
 
 def make_feature(world, kind: str, x: float, y: float, rng: np.random.Generator,

@@ -23,7 +23,7 @@ from ..detail.pois import poi_z
 from ..grid import blur, chamfer_distance, dilate, slope, smoothstep
 from ..noise import Noise, derive_seed
 from ..volume.caves import CaveSystem
-from ..volume.features import FEATURE_KINDS, make_feature
+from ..volume.features import FEATURE_KINDS, make_feature, near_rock
 from ..world import POI, World
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -250,6 +250,8 @@ def apply_action(world: World, action: dict, rng: np.random.Generator,
                 raise ActionError(f"{lk} in {region} would overlap protected ground")
             if not f.stands_dry(world):
                 raise ActionError(f"{lk} in {region} would stand in a lake or river")
+            if f.crowds_cave_mouth(world):
+                raise ActionError(f"{lk} in {region} would wall up a cave mouth")
             world.features.append(f)
             rec.update(x=site[0], y=site[1], feature=f.id)
     elif kind == "add_cave":
@@ -260,6 +262,8 @@ def apply_action(world: World, action: dict, rng: np.random.Generator,
         cave = _grotto(world, site, rng, forbidden=forbid)
         if cave is None:
             raise ActionError(f"a cave in {region} would tunnel under protected ground")
+        if any(near_rock(world, e["x"], e["y"], e["z"] + 1.5) for e in cave.entrances):
+            raise ActionError(f"a cave in {region} would open inside a rock landform")
         world.forced_caves.append(cave)
         rec.update(x=site[0], y=site[1], cave=cave.id)
     elif kind == "add_lake":
