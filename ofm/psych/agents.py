@@ -99,7 +99,7 @@ def build_nav(world, per: Perception) -> NavGraph:
     gi, gj = np.meshgrid(np.arange(G), np.arange(G))
     cx = (gi + 0.5) * cs
     cy = (gj + 0.5) * cs
-    h = bilinear(world.height, cx / cell - 0.5, cy / cell - 0.5)
+    h = bilinear(world.ground(), cx / cell - 0.5, cy / cell - 0.5)      # the exported ground
     # deep water blocks, rivers do not
     water_frac = box_blur((world.ocean | world.lake_mask).astype(float), max(1, int(cs / cell / 2)))
     water = bilinear(water_frac, cx / cell - 0.5, cy / cell - 0.5) > 0.5

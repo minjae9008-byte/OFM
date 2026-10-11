@@ -3,22 +3,32 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..grid import dilate, label
+from ..grid import bilinear, dilate, label
 from ..volume.mesher import Mesh
 
 
 def lake_meshes(world) -> list[tuple[dict, Mesh, np.ndarray]]:
-    """One mesh per lake: the lake cells (grown by one cell so shores tuck under terrain)."""
+    """One flat mesh per lake on the exported (detail) grid.
+
+    Quads over lake cells are water; a one-cell shore ring is added where the ground stays
+    above the water (the sheet tucks under the shore) but not where it falls away (the
+    outlet valley), where a grown sheet would hang in the air."""
     out = []
     if world.lake_mask is None or not world.lake_mask.any():
         return out
     lab, n = label(world.lake_mask, diagonal=True)
     cell = world.cell
+    h = world.hires
+    sp = world.hires_spacing
+    nq = h.shape[0] - 1
+    qc = (np.arange(nq) + 0.5) * sp
+    bi = np.clip((qc / cell).astype(int), 0, world.size - 1)
+    vmin = np.minimum(np.minimum(h[:-1, :-1], h[:-1, 1:]), np.minimum(h[1:, :-1], h[1:, 1:]))
+    levels = np.where(world.lake_mask, world.lake_level, np.nan)
     for lake in world.lakes:
         cx, cy = lake["center"]
         level = lake["level"]
         # find the component whose cells sit at this lake's level
-        levels = np.where(world.lake_mask, world.lake_level, np.nan)
         comp = None
         for k in range(1, n + 1):
             m = lab == k
@@ -29,16 +39,16 @@ def lake_meshes(world) -> list[tuple[dict, Mesh, np.ndarray]]:
                     break
         if comp is None:
             continue
-        grown = dilate(comp, 1)
-        jj, ii = np.nonzero(grown)
-        x0, y0 = ii * cell, jj * cell
-        quads = np.stack([np.stack([x0, y0], 1), np.stack([x0 + cell, y0], 1),
-                          np.stack([x0 + cell, y0 + cell], 1), np.stack([x0, y0 + cell], 1)], axis=1)
-        pts = quads.reshape(-1, 2)
-        key = np.round(pts / cell).astype(np.int64)
-        uniq, inv = np.unique(key, axis=0, return_inverse=True)
+        wet = comp[np.ix_(bi, bi)]
+        ring = dilate(comp, 1)[np.ix_(bi, bi)] & ~wet & (vmin >= level - 0.5)
+        qj, qi = np.nonzero(wet | ring)
+        if not len(qi):
+            continue
+        corners = np.stack([np.stack([qi, qj], 1), np.stack([qi + 1, qj], 1),
+                            np.stack([qi + 1, qj + 1], 1), np.stack([qi, qj + 1], 1)], axis=1)
+        uniq, inv = np.unique(corners.reshape(-1, 2), axis=0, return_inverse=True)
         inv = inv.reshape(-1, 4)
-        verts = np.column_stack([uniq[:, 0] * cell, uniq[:, 1] * cell, np.full(len(uniq), level)])
+        verts = np.column_stack([uniq[:, 0] * sp, uniq[:, 1] * sp, np.full(len(uniq), level)])
         tris = np.vstack([inv[:, [0, 1, 2]], inv[:, [0, 2, 3]]]).astype(np.uint32)
         normals = np.tile(np.array([[0.0, 0.0, 1.0]], dtype=np.float32), (len(verts), 1))
         colors = np.tile(np.array([[52, 104, 150, 200]], dtype=np.uint8), (len(verts), 1))
@@ -49,6 +59,14 @@ def lake_meshes(world) -> list[tuple[dict, Mesh, np.ndarray]]:
     return out
 
 
+def ribbon_half_width(world, width) -> np.ndarray:
+    """Half-width of a river's water sheet: the channel the detail pass carved (at least
+    1.25 export cells so it does not bead along diagonals, see ``hires.river_field``) plus
+    half a cell, so the edges tuck under the banks instead of floating over the channel."""
+    sp = world.hires_spacing or world.cell
+    return np.maximum(0.5 * np.maximum(np.asarray(width, dtype=np.float64), 2.0), 1.25 * sp) + 0.5 * sp
+
+
 def river_meshes(world) -> list[tuple[dict, Mesh, np.ndarray]]:
     """Ribbon along each river polyline at water-surface height; uv.y runs downstream."""
     out = []
@@ -56,18 +74,24 @@ def river_meshes(world) -> list[tuple[dict, Mesh, np.ndarray]]:
         pts = np.array(river["points"], dtype=np.float64)
         if len(pts) < 2:
             continue
-        widths = np.maximum(np.array(river["width"]), 2.0)
+        half = ribbon_half_width(world, river["width"])
         d = np.gradient(pts[:, :2], axis=0)
         d /= np.maximum(np.linalg.norm(d, axis=1, keepdims=True), 1e-9)
         side = np.stack([-d[:, 1], d[:, 0]], axis=1)
-        left = pts[:, :2] + side * widths[:, None] * 0.5
-        right = pts[:, :2] - side * widths[:, None] * 0.5
+        left = pts[:, :2] + side * half[:, None]
+        right = pts[:, :2] - side * half[:, None]
         z = pts[:, 2]
         verts = np.empty((2 * len(pts), 3))
         verts[0::2, :2] = left
         verts[1::2, :2] = right
         verts[0::2, 2] = z
         verts[1::2, 2] = z
+        if world.hires is not None:
+            # on steep reaches the banks fall away faster than a flat cross-section: drape the
+            # edges onto the bank (white water) instead of leaving them hanging in the air
+            sp = world.hires_spacing
+            g = bilinear(world.hires, verts[:, 0] / sp, verts[:, 1] / sp)
+            verts[:, 2] = np.minimum(verts[:, 2], g + 0.1)
         n = len(pts)
         a = np.arange(n - 1) * 2
         # (l_k, r_k, r_k+1), (l_k, r_k+1, l_k+1) is counter-clockwise seen from above

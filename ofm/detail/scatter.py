@@ -4,13 +4,14 @@ Instance density follows simple ecological rules instead of uniform noise:
 precipitation and temperature set canopy density per biome, the tree line
 follows temperature, trees avoid steep rock and water, riparian bushes
 cluster along rivers, and boulders collect at the foot of cliffs (talus).
-Positions come from a jittered grid with a minimum spacing per type.
+Positions come from a jittered grid with a minimum spacing per type; each
+instance is then checked on the exported ground (detail slope, water).
 """
 from __future__ import annotations
 
 import numpy as np
 
-from ..grid import bilinear, blur, chamfer_distance, slope, smoothstep
+from ..grid import bilinear, blur, chamfer_distance, gradient, slope, smoothstep
 from ..noise import Noise, derive_seed
 from ..physics.biome import B, BIOME_VEG
 
@@ -65,6 +66,15 @@ def scatter_vegetation(world) -> dict[str, np.ndarray]:
     maps = _density_maps(world)
     extent = world.extent
     budget = cfg.detail.scatter_max
+    # The density maps live on the simulation grid; every instance is checked again on the
+    # exported ground: the detail pass adds terrace risers, canyon walls and carved channels
+    # the 16 m grid smooths over, and an instance must not stand on them or in water.
+    sp = world.hires_spacing
+    gx, gy = gradient(world.hires, sp)
+    slope_hi = np.degrees(np.arctan(np.hypot(gx, gy)))
+    sea = cfg.world.sea_level
+    lake_level = np.where(world.lake_mask, world.lake_level, -np.inf) if world.lake_mask is not None \
+        else np.full((world.size, world.size), -np.inf)
     raw = {}
     for k_idx, (kind, (spacing, base_scale)) in enumerate(SCATTER_TYPES.items()):
         m = maps[kind]
@@ -82,7 +92,18 @@ def scatter_vegetation(world) -> dict[str, np.ndarray]:
         x, y = x[keep], y[keep]
         if len(x) == 0:
             continue
-        z = bilinear(world.hires, x / world.hires_spacing, y / world.hires_spacing)
+        z = bilinear(world.hires, x / sp, y / sp)
+        s_hi = bilinear(slope_hi, x / sp, y / sp)
+        lo, hi = (40.0, 52.0) if kind == "boulder" else (32.0, 44.0)
+        ci = np.clip((x / world.cell).astype(int), 0, world.size - 1)
+        cj = np.clip((y / world.cell).astype(int), 0, world.size - 1)
+        wet = (z < sea + 0.05) | (z < lake_level[cj, ci] + 0.05)
+        if kind != "reed":
+            wet |= world.river_mask[cj, ci]
+        ok = ~wet & (rng.random(len(x)) < 1.0 - smoothstep(lo, hi, s_hi))
+        x, y, z = x[ok], y[ok], z[ok]
+        if len(x) == 0:
+            continue
         yaw = rng.uniform(0, 360, len(x))
         scale = base_scale * rng.uniform(0.75, 1.3, len(x))
         raw[kind] = np.stack([x, y, z, yaw, scale], axis=1)

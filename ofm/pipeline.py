@@ -2,8 +2,9 @@
 
     tectonics -> strata -> fluvial (stream power) -> droplet + thermal erosion -> basins
                                                                 (world.height_base)
-    climate -> hydrology -> biomes -> cliffs/caves/features
-    -> detail heightfield (hires erosion, scree, beaches, floodplains) -> POIs/scatter
+    climate -> hydrology -> biomes -> cliff masks
+    -> detail heightfield (hires erosion, scree, beaches, floodplains) = the exported ground
+    -> caves/features (on that ground) -> POIs/scatter
     -> terrain quality analysis -> psychology
     [AI director loop edits height_base / features / POIs and rebuilds]
     -> lore -> volume meshing -> export
@@ -72,9 +73,9 @@ def rebuild(world: World, progress: Progress | None = None, psych: bool = True,
             protect: Callable[[World, str], None] | None = None) -> World:
     """Recompute every stage downstream of ``world.height_base``.
 
-    ``protect(world, stage)`` is called after caves and cliffs (``"surface"``), after the detail
-    heightfield (``"terrain"``) and after vegetation and POIs (``"objects"``), before any
-    evaluation: the AI director uses it to put protected content back
+    ``protect(world, stage)`` is called after the detail heightfield (``"terrain"``), after
+    caves and features (``"surface"``) and after vegetation and POIs (``"objects"``), before
+    any evaluation: the AI director uses it to put protected content back
     (``ScopePolicy.protect_rebuild``) and to abort the rebuild by raising when protected terrain
     or water changed anyway."""
     from .detail.amplify import amplify
@@ -115,23 +116,28 @@ def rebuild(world: World, progress: Progress | None = None, psych: bool = True,
                                     world.hardness, world.river_mask)
     with _stage(world, "caves_cliffs", progress):
         world.cliff_mask, world.coast_cliff = cliff_masks(world)
+    # The exported terrain comes first: caves, features, vegetation and POIs are all placed
+    # on it (``world.ground_at``), so cave mouths open at the visible ground, passages keep
+    # their cover under the detail surface and river channels, and features stand on it.
+    with _stage(world, "detail", progress):
+        world.hires, world.hires_spacing = amplify(world)
+        if protect is not None:
+            protect(world, "terrain")
+    with _stage(world, "caves_cliffs", progress):
         world.caves = simulate_caves(world)
         for cave in world.forced_caves:          # director-added grottos survive rebuilds
             for e in cave.entrances:
-                e["z"] = round(float(world.height_at(e["x"], e["y"])), 2)
+                e["z"] = round(float(world.ground_at(e["x"], e["y"])), 2)
         world.caves = world.caves + list(world.forced_caves)
         user_feats = [f for f in world.features if f.source != "procedural"]
         for f in user_feats:  # re-seat edited landmarks on the new ground
-            f.z = float(world.height_at(f.x, f.y)) if f.kind != "sea_stack" else f.z
+            f.z = float(world.ground_at(f.x, f.y)) if f.kind != "sea_stack" else f.z
         world.features = place_procedural_features(world) + user_feats
         for k, f in enumerate(world.features):
             f.id = f"feature_{k}"
         if protect is not None:
             protect(world, "surface")
     with _stage(world, "detail", progress):
-        world.hires, world.hires_spacing = amplify(world)
-        if protect is not None:
-            protect(world, "terrain")
         world.scatter = scatter_vegetation(world)
         world.pois = place_pois(world)
     if protect is not None:

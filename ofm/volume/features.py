@@ -109,7 +109,7 @@ def make_feature(world, kind: str, x: float, y: float, rng: np.random.Generator,
                  scale: float = 1.0, source: str = "procedural") -> Feature:
     if kind not in FEATURE_KINDS:
         raise ValueError(f"unknown feature kind {kind}")
-    z = float(world.height_at(x, y))
+    z = float(world.ground_at(x, y))
     if kind == "sea_stack":
         z = min(z, world.cfg.world.sea_level - 2.0)
     dims = {

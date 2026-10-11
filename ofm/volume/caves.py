@@ -79,7 +79,9 @@ class _Terrain:
         self.noise = Noise(derive_seed(world.cfg.world.seed, "fractures"))
 
     def h(self, x, y):
-        return bilinear(self.w.height, np.asarray(x) / self.cell - 0.5, np.asarray(y) / self.cell - 0.5)
+        # the exported ground: mouths open at the visible surface and the passage cover is
+        # measured under the detail terrain and the carved river channels
+        return self.w.ground_at(x, y)
 
     def wt(self, x, y):
         return bilinear(self.w.water_table, np.asarray(x) / self.cell - 0.5, np.asarray(y) / self.cell - 0.5)
@@ -254,7 +256,7 @@ def simulate_caves(world) -> list[CaveSystem]:
         sx, sy = (i + 0.5) * cell, (j + 0.5) * cell
         if any(np.hypot(sx - ux, sy - uy) < min_sep for ux, uy in used):
             continue
-        sz = float(h[j, i])
+        sz = float(t.h(sx, sy))
         d = np.hypot(out_x - sx, out_y - sy)
         drop = sz - out_h
         ok = (d > 250.0) & (d < cc.search_radius) & (drop > 25.0)

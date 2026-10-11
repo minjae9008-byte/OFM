@@ -418,3 +418,27 @@ def test_truncated_wrappers_and_numbers():
     assert salvage_object('{"a": 1, "n": 12e') == {"a": 1}
     assert salvage_object('{"a": 1 "b": 2, "c": 3') is None
     assert salvage_object('{"a": "x", "b": {"c": 1}') == {"a": "x", "b": {"c": 1}}
+
+
+def test_ai_grottos_keep_their_cover(mid_world):
+    from ofm.ai.actions import _grotto
+    w = _scoped(mid_world)
+    rng = np.random.default_rng(0)
+    made = 0
+    land = np.argwhere(~w.water)
+    for k in range(0, len(land), max(1, len(land) // 40)):
+        j, i = land[k]
+        cave = _grotto(w, ((i + 0.5) * w.cell, (j + 0.5) * w.cell), rng)
+        if cave is None:
+            continue
+        made += 1
+        seg = np.asarray(cave.segments)
+        mid = 0.5 * (seg[:, 0:3] + seg[:, 3:6])
+        e = cave.entrances[0]
+        far = np.hypot(mid[:, 0] - e["x"], mid[:, 1] - e["y"]) > 25.0
+        if far.any():
+            roof = mid[far, 2] + np.maximum(seg[far, 6], seg[far, 7])
+            assert (w.ground_at(mid[far, 0], mid[far, 1]) - roof).min() >= 1.0
+        ch = cave.chambers[0]
+        assert float(w.ground_at(ch[0], ch[1])) - (ch[2] + ch[5]) >= 1.5 - 1e-6
+    assert made > 3

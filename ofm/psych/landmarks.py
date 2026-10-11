@@ -18,7 +18,7 @@ from .perception import Perception
 
 def _candidates(world) -> list[Landmark]:
     cell = world.cell
-    h = world.height
+    h = world.ground()                  # summits of the exported terrain
     out: list[Landmark] = []
     r = max(3, int(300.0 / cell))
     peak = (h >= sliding_max(h, r) - 1e-6) & ~world.water

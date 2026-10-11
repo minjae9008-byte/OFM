@@ -150,6 +150,16 @@ def resample(a: np.ndarray, shape: tuple[int, int], cubic: bool = False) -> np.n
     return bicubic(a, xx, yy) if cubic else bilinear(a, xx, yy)
 
 
+def cells_to_cells(a: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
+    """Resample a cell-centred grid covering the map onto another cell-centred grid covering
+    the same map: cell i of n sits at (i + 0.5) / n of the extent. (``resample`` maps the
+    first and last samples onto each other instead, which is right for vertex grids.)"""
+    h, w = a.shape
+    ys = (np.arange(shape[0]) + 0.5) * h / shape[0] - 0.5
+    xs = (np.arange(shape[1]) + 0.5) * w / shape[1] - 0.5
+    return bilinear(a, xs[None, :], ys[:, None])
+
+
 def chamfer_distance(mask: np.ndarray, max_dist: float | None = None) -> np.ndarray:
     """Approximate Euclidean distance (in cells) to the nearest True cell."""
     d = np.where(mask, 0.0, np.inf)

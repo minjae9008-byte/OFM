@@ -295,7 +295,9 @@ def ruggedness(h: np.ndarray, land: np.ndarray) -> float | None:
 def analyze_terrain(world) -> dict:
     qc = world.cfg.quality
     soft = qc.band_softness
-    h = world.height
+    # the exported terrain (detail heightfield at the cell centres): slopes, hypsometry and
+    # landforms describe what players walk on; pits stay on the simulation grid (hydrology)
+    h = world.ground()
     cell = world.cell
     land = ~world.water
     land_km2 = land.sum() * cell * cell / 1e6

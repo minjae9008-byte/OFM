@@ -30,6 +30,12 @@ class DensityField:
         self.slope_factor = np.sqrt(1.0 + gx * gx + gy * gy)
         slope_deg = np.degrees(np.arctan(np.hypot(gx, gy)))
         cliff_w = smoothstep(self.cc.cliff_slope_deg - 6.0, self.cc.cliff_slope_deg + 6.0, slope_deg)
+        # undercuts and rough rock are weathering of exposed faces: not on steep lake beds or
+        # the sea floor (wave notches at sea level are handled separately)
+        n0 = self.hires.shape[0]
+        c0 = np.arange(n0) * self.spacing / world.cell - 0.5
+        wet = bilinear(world.water.astype(np.float64), c0[None, :], c0[:, None])
+        cliff_w = cliff_w * (1.0 - smoothstep(0.3, 0.7, wet))
         # Only coherent cliff faces get volumetric treatment, not isolated steep pixels.
         lab, n = label(cliff_w > 0.5)
         if n:

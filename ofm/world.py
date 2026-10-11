@@ -116,13 +116,33 @@ class World:
         return np.asarray(x) / self.cell - 0.5, np.asarray(y) / self.cell - 0.5
 
     def height_at(self, x, y) -> np.ndarray:
+        """The simulation heightfield (``height``, hydrology carved) at world positions."""
         from .grid import bilinear
         ci, cj = self.to_index(x, y)
         return bilinear(self.height, ci, cj)
 
+    def ground_at(self, x, y) -> np.ndarray:
+        """The exported terrain surface (the detail heightfield ``hires``) at world positions;
+        the simulation heightfield before the detail stage has run.
+
+        Everything placed on the terrain (caves, features, vegetation, POIs) and everything
+        that evaluates what a player sees uses this surface, because the detail pass
+        (terraces, rills, channels) moves the ground by metres to tens of metres."""
+        if self.hires is None:
+            return self.height_at(x, y)
+        from .grid import bilinear
+        return bilinear(self.hires, np.asarray(x) / self.hires_spacing, np.asarray(y) / self.hires_spacing)
+
+    def ground(self) -> np.ndarray:
+        """``ground_at`` sampled at the simulation cell centres, shape (size, size)."""
+        if self.hires is None:
+            return self.height
+        c = (np.arange(self.size) + 0.5) * self.cell
+        return self.ground_at(c[None, :], c[:, None])
+
     def visual_height(self) -> np.ndarray:
-        """Heightfield including tops of volumetric landmark features (for visibility)."""
-        h = self.height.copy()
+        """Exported ground including tops of volumetric landmark features (for visibility)."""
+        h = self.ground().copy()
         for feat in self.features:
             feat.stamp_top(h, self.cell)
         if self.lake_level is not None:

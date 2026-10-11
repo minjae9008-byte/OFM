@@ -517,6 +517,7 @@ class RebuildGuard:
     # -- stages -------------------------------------------------------------------------
     def surface(self, cand: World) -> None:
         pol, ref = self.policy, self.ref
+        self._check_ai_caves(cand)
         F = pol._forbidden
         if not F.any():
             return
@@ -599,6 +600,24 @@ class RebuildGuard:
         cand.scatter = scatter
 
     # -- helpers ------------------------------------------------------------------------
+    def _check_ai_caves(self, cand: World, min_cover: float = 1.0, mouth_m: float = 25.0) -> None:
+        """Caves the director dug in earlier iterations keep fixed passages; a later edit that
+        lowers the ground over one would break it open (a skylight into the tunnel)."""
+        for cave in cand.forced_caves:
+            seg = np.asarray(cave.segments)
+            if not len(seg):
+                continue
+            mid = 0.5 * (seg[:, 0:3] + seg[:, 3:6])
+            top = mid[:, 2] + np.maximum(seg[:, 6], seg[:, 7])
+            far = np.ones(len(mid), dtype=bool)
+            for e in cave.entrances:
+                far &= np.hypot(mid[:, 0] - e["x"], mid[:, 1] - e["y"]) > mouth_m
+            if far.any():
+                cover = cand.ground_at(mid[far, 0], mid[far, 1]) - top[far]
+                if float(cover.min()) < min_cover:
+                    raise ScopeViolation(f"the edit would break the AI cave {cave.id} open",
+                                         {"ai_cave_min_cover_m": round(float(cover.min()), 2)})
+
     def _caves(self, cand: World) -> None:
         pol, ref = self.policy, self.ref
         restored = [copy.deepcopy(c) for c in ref.caves if pol._touches(c)]
@@ -613,7 +632,7 @@ class RebuildGuard:
             self._check_cover(c, cand, ref)
             for e in c.entrances:
                 if not pol.in_forbidden(e["x"], e["y"])[0]:
-                    e["z"] = round(float(cand.height_at(e["x"], e["y"])), 2)
+                    e["z"] = round(float(cand.ground_at(e["x"], e["y"])), 2)
         used = {c.id for c in restored}
         n = 0
         for c in kept:
@@ -637,8 +656,8 @@ class RebuildGuard:
         if not out.any():
             return
         sel = mid[out]
-        new = cand.height_at(sel[:, 0], sel[:, 1]) - sel[:, 2]
-        old = ref.height_at(sel[:, 0], sel[:, 1]) - sel[:, 2]
+        new = cand.ground_at(sel[:, 0], sel[:, 1]) - sel[:, 2]
+        old = ref.ground_at(sel[:, 0], sel[:, 1]) - sel[:, 2]
         if (new < np.minimum(old, min_cover) - 0.05).any():
             raise ScopeViolation(f"protected cave {cave.id} would lose its rock cover outside the protected area",
                                  {"min_cover_m": round(float(new.min()), 2)})

@@ -38,6 +38,10 @@ class VolumeResult:
     chunks: list[Chunk]
     holes: np.ndarray               # bool, (N-1, N-1) export cells, True = hole
     stats: dict
+    # export cells where the volume surface differs from the heightfield (both modes), and
+    # the density field itself: objects there stand on the volume, see ``seat_objects``
+    deviation: np.ndarray | None = None
+    field: DensityField | None = None
 
 
 def _active_columns(world, field_: DensityField, n_cols: int, col_size: float, mode: str) -> dict:
@@ -166,25 +170,27 @@ def build_volume(world, mode: str | None = None) -> VolumeResult:
         origin = np.array([xs[0], ys[0], zs[0]], dtype=np.float64)
         owned = ((1, C + 1), (1, C + 1), (0, len(zs)))
         mesh = surface_nets(D, origin, voxel, owned)
-        if mode == "hybrid":
-            # Rock where the heightfield has air (features) or air close under the ground
-            # (cave mouths, overhang recesses) means the engine terrain must be cut.
-            solid = D > 0
-            base_solid = D0 > 0
-            near = np.abs(D0) < vc.surface_band
-            mism = (solid != base_solid) & near
-            mism |= solid & ~base_solid
-            cols = mism[1:C + 1, 1:C + 1].any(axis=2)
-            if cols.any():
-                ii, jj = np.nonzero(cols)
-                hx = np.clip(((ii + ci * C) * voxel / sp).astype(int), 0, n_hi - 2)
-                hy = np.clip(((jj + cj * C) * voxel / sp).astype(int), 0, n_hi - 2)
-                holes[hy, hx] = True
+        # Rock where the heightfield has air (features) or air close under the ground
+        # (cave mouths, overhang recesses): in hybrid mode the engine terrain is cut there.
+        solid = D > 0
+        base_solid = D0 > 0
+        near = np.abs(D0) < vc.surface_band
+        mism = (solid != base_solid) & near
+        mism |= solid & ~base_solid
+        cols = mism[1:C + 1, 1:C + 1].any(axis=2)
+        if cols.any():
+            ii, jj = np.nonzero(cols)
+            hx = np.clip(((ii + ci * C) * voxel / sp).astype(int), 0, n_hi - 2)
+            hy = np.clip(((jj + cj * C) * voxel / sp).astype(int), 0, n_hi - 2)
+            holes[hy, hx] = True
         raw_chunks.append(((ci, cj), origin, mesh, sorted(kinds)))
 
+    holes = dilate(holes, 1)
+    deviation = holes.copy()
     if mode == "hybrid":
-        holes = dilate(holes, 1)
         keep_mask = dilate(holes, 1)
+    else:
+        holes = np.zeros_like(holes)          # the whole world is meshed: no terrain to cut
     chunks = []
     tris = 0
     for key, origin, mesh, kinds in raw_chunks:
@@ -213,7 +219,76 @@ def build_volume(world, mode: str | None = None) -> VolumeResult:
         "triangles": int(tris),
         "hole_cells": int(holes.sum()),
     }
-    return VolumeResult(chunks=chunks, holes=holes, stats=stats)
+    return VolumeResult(chunks=chunks, holes=holes, stats=stats, deviation=deviation, field=field_)
+
+
+def volume_ground(field_: DensityField, x, y, z0, reach: float = 12.0, step: float = 0.5):
+    """Height of the volume surface (highest air-over-rock crossing) within ``reach`` of
+    ``z0`` at each (x, y). Returns (z, found)."""
+    x, y, z0 = (np.asarray(v, dtype=np.float64) for v in (x, y, z0))
+    out = np.array(z0, dtype=np.float64)
+    found = np.zeros(len(x), dtype=bool)
+    if not len(x):
+        return out, found
+    dz = np.arange(reach, -reach - step / 2, -step)                 # top -> bottom
+    col = field_.vc.chunk_voxels * field_.vc.voxel_size
+    keys = (np.floor(x / col).astype(np.int64) << 20) + np.floor(y / col).astype(np.int64)
+    for key in np.unique(keys):                                      # spatial batches keep cave culling local
+        idx = np.flatnonzero(keys == key)
+        X = np.broadcast_to(x[idx, None, None], (len(idx), 1, len(dz)))
+        Y = np.broadcast_to(y[idx, None, None], (len(idx), 1, len(dz)))
+        Z = z0[idx, None, None] + dz[None, None, :]
+        D, _ = field_.sample(np.ascontiguousarray(X), np.ascontiguousarray(Y), Z)
+        D = D[:, 0, :]
+        cross = (D[:, :-1] <= 0) & (D[:, 1:] > 0)                    # air above, rock below
+        has = cross.any(axis=1)
+        k = np.argmax(cross, axis=1)
+        a, b = D[np.arange(len(idx)), k], D[np.arange(len(idx)), k + 1]
+        t = np.where(b - a > 1e-9, -a / np.maximum(b - a, 1e-9), 0.5)
+        zc = z0[idx] + dz[k] - t * step
+        out[idx] = np.where(has, zc, z0[idx])
+        found[idx] = has
+    return out, found
+
+
+def seat_objects(world, vol: VolumeResult, max_shift: float = 8.0):
+    """Scatter and POIs standing where the volume replaces the heightfield (terrain holes,
+    meshed cliff faces) get the volume surface's height; vegetation over a void (a cave
+    mouth, an overhang recess) or more than ``max_shift`` metres off is dropped.
+
+    Returns ``(scatter, poi_z)`` without changing ``world``: the exporter writes these."""
+    scatter = {k: np.array(v, copy=True) for k, v in world.scatter.items()}
+    poi_z: dict[str, float] = {}
+    if vol.deviation is None or vol.field is None or not vol.deviation.any():
+        return scatter, poi_z
+    sp = world.hires_spacing
+    n = vol.deviation.shape[0]
+
+    def dev(x, y):
+        i = np.clip((np.asarray(x) / sp).astype(int), 0, n - 1)
+        j = np.clip((np.asarray(y) / sp).astype(int), 0, n - 1)
+        return vol.deviation[j, i]
+
+    for kind, a in scatter.items():
+        if not len(a):
+            continue
+        m = dev(a[:, 0], a[:, 1])
+        if not m.any():
+            continue
+        idx = np.flatnonzero(m)
+        z, ok = volume_ground(vol.field, a[idx, 0], a[idx, 1], a[idx, 2])
+        ok &= np.abs(z - a[idx, 2]) <= max_shift
+        a[idx[ok], 2] = z[ok]
+        keep = np.ones(len(a), dtype=bool)
+        keep[idx[~ok]] = False
+        scatter[kind] = a[keep]
+    for p in world.pois:
+        if p.kind == "cave_entrance" or not dev(p.x, p.y):
+            continue
+        z, ok = volume_ground(vol.field, [p.x], [p.y], [p.z])
+        if ok[0] and abs(z[0] - p.z) <= max_shift:
+            poi_z[p.id] = float(z[0])
+    return scatter, poi_z
 
 
 def sample_terrain_height(world, x, y):

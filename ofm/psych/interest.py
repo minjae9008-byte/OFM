@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..grid import resample
+from ..grid import cells_to_cells
 from ..physics.biome import BIOME_NAMES, B
 from ..world import World
 from .agents import AgentLog, simulate_agents
@@ -202,8 +202,8 @@ def evaluate_psychology(world: World) -> dict:
         "agents": logs,
         "interest_grid": interest,
         # full-resolution versions for previews
-        "interest": resample(interest, (world.size, world.size)),
-        "boredom": resample(bored_map, (world.size, world.size)),
+        "interest": cells_to_cells(interest, (world.size, world.size)),
+        "boredom": cells_to_cells(bored_map, (world.size, world.size)),
     }
     out_scores = {k: round(float(v), 2) for k, v in scores.items() if v is not None and k != "overall"}
     out_scores["overall"] = round(float(scores["overall"] or 0.0), 3)

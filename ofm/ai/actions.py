@@ -175,12 +175,12 @@ def _norm(a: np.ndarray) -> np.ndarray:
 
 
 def _psych_field(world: World, key: str) -> np.ndarray:
-    from ..grid import resample
+    from ..grid import cells_to_cells
     per = world.psych.get("perception")
     if per is None:
         return np.zeros((world.size, world.size))
     grid = getattr(per, key) if hasattr(per, key) else world.psych[key]
-    return resample(np.asarray(grid, dtype=float), (world.size, world.size))
+    return cells_to_cells(np.asarray(grid, dtype=float), (world.size, world.size))
 
 
 def _footprint_clear(world: World, x: float, y: float, radius: float, forbidden: np.ndarray | None) -> bool:
@@ -272,7 +272,7 @@ def apply_action(world: World, action: dict, rng: np.random.Generator,
         site = _site(world, region, _poi_score(world, pk, land, s, rng), forbidden=forbid)
         if site is None:
             raise ActionError(f"no site for {pk} in {region}")
-        z = float(world.height_at(*site))
+        z = float(world.ground_at(*site))
         world.pois.append(POI(id=f"poi_ai_{len(world.pois)}", kind=pk, x=site[0], y=site[1], z=z,
                               importance=0.8, region=region, source="ai"))
         rec.update(x=site[0], y=site[1])
@@ -374,7 +374,7 @@ def _grotto(world: World, site, rng, forbidden: np.ndarray | None = None) -> Cav
     j = int(np.clip(site[1] / world.cell, 0, world.size - 1))
     d = np.array([gx[j, i], gy[j, i]])
     d = d / (np.linalg.norm(d) + 1e-9)          # uphill = into the hill
-    z0 = float(world.height_at(*site)) + 1.0
+    z0 = float(world.ground_at(*site)) + 1.0
     pos = np.array([site[0] - d[0] * 6.0, site[1] - d[1] * 6.0, z0])
     segs = []
     r = cfg.tunnel_radius * 1.1
@@ -387,7 +387,7 @@ def _grotto(world: World, site, rng, forbidden: np.ndarray | None = None) -> Cav
         ang = rng.normal(0, 0.22)
         c, s_ = np.cos(ang), np.sin(ang)
         d = np.array([d[0] * c - d[1] * s_, d[0] * s_ + d[1] * c])
-        surf = float(world.height_at(pos[0] + d[0] * cfg.step, pos[1] + d[1] * cfg.step))
+        surf = float(world.ground_at(pos[0] + d[0] * cfg.step, pos[1] + d[1] * cfg.step))
         dz = np.clip((surf - cfg.min_cover * 1.4 - pos[2]) / 20.0, -0.45, 0.1)
         nxt = pos + np.array([d[0], d[1], dz]) * cfg.step
         if blocked is not None:
@@ -395,15 +395,21 @@ def _grotto(world: World, site, rng, forbidden: np.ndarray | None = None) -> Cav
             nj = int(np.clip(nxt[1] / world.cell, 0, world.size - 1))
             if blocked[nj, ni]:
                 break
+        # past the mouth the roof must stay under the ground (the walk descends at most
+        # ~24 deg, so a steeper drop of the ground - a terrace riser, a gully - ends it here)
+        if np.hypot(nxt[0] - site[0], nxt[1] - site[1]) > 25.0 and surf - (nxt[2] + r) < 1.5:
+            break
         segs.append([*pos, *nxt, r, r * 0.98])
         pos = nxt
     if len(segs) < 4:
         return None
     ch_r = r * ch_scale
+    # the chamber (half-height 0.6 ch_r) sits under at least 1.5 m of rock
+    cz = min(pos[2] + ch_r * 0.3, float(world.ground_at(pos[0], pos[1])) - 1.5 - ch_r * 0.6)
     idx = len(world.caves) + len(world.forced_caves)
     return CaveSystem(
         id=f"cave_ai_{idx}", kind="grotto", segments=np.array(segs),
-        chambers=np.array([[pos[0], pos[1], pos[2] + ch_r * 0.3, ch_r, ch_r * 0.9, ch_r * 0.6]]),
+        chambers=np.array([[pos[0], pos[1], cz, ch_r, ch_r * 0.9, ch_r * 0.6]]),
         entrances=[{"x": round(site[0], 2), "y": round(site[1], 2), "z": round(z0 - 1.0, 2), "kind": "grotto",
                     "dir": [round(float(d[0]), 3), round(float(d[1]), 3), 0.0]}],
         main_count=len(segs),

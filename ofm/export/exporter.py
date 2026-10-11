@@ -24,9 +24,9 @@ import numpy as np
 from PIL import Image
 
 from .. import __version__
-from ..grid import resample
+from ..grid import bilinear, resample
 from ..physics.biome import BIOME_NAMES, MATERIALS
-from ..volume.builder import VolumeResult
+from ..volume.builder import VolumeResult, seat_objects
 from ..world import World
 from .coords import to_unity, to_unreal
 from .meshio import write_glb, write_ofmmesh
@@ -37,6 +37,14 @@ UE_RESOLUTIONS = [127, 253, 505, 1009, 2017, 4033, 8129]
 
 def _rel(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
+
+
+def _cells_at_vertices(field: np.ndarray, res: int, world: World) -> np.ndarray:
+    """A cell-centred simulation field sampled at the vertices of a ``res`` x ``res`` grid
+    spanning the map corner to corner (engine heightmaps, Unity alphamaps and Unreal weight
+    maps are all vertex aligned): vertex k sits at k * extent / (res - 1)."""
+    x = np.arange(res) * (world.extent / (res - 1)) / world.cell - 0.5
+    return bilinear(field, x[None, :], x[:, None])
 
 
 def _write_png16(arr01: np.ndarray, path: Path) -> None:
@@ -65,7 +73,7 @@ def export_terrain(world: World, vol: VolumeResult, out: Path) -> dict:
     layers = []
     weights = []
     for k, (name, color) in enumerate(MATERIALS):
-        w = resample(world.splat[..., k], (splat_res, splat_res))
+        w = _cells_at_vertices(world.splat[..., k], splat_res, world)
         weights.append(np.clip(w, 0, 1))
         layers.append({"name": name, "color": list(color)})
     wst = np.stack(weights, axis=-1)
@@ -79,14 +87,16 @@ def export_terrain(world: World, vol: VolumeResult, out: Path) -> dict:
 
     # Unreal Landscape: recommended resolution, 16-bit centred at 32768, rows north -> south
     ue_res = min(UE_RESOLUTIONS, key=lambda r: abs(r - res))
-    h_ue = resample(h, (ue_res, ue_res), cubic=True)
+    # bilinear: a cubic resample overshoots at channel and lake edges and can lift the bed
+    # above the water surfaces that were fitted to the detail grid
+    h_ue = resample(h, (ue_res, ue_res))
     mid = 0.5 * (hmin + hmax)
     z_scale = (hmax - hmin) * 100.0 / 512.0 * 1.002    # Unreal "Z scale" in percent-of-metre units
     vals = 32768.0 + (h_ue - mid) * 100.0 * 128.0 / z_scale
     Image.fromarray(np.clip(np.round(vals), 0, 65535).astype(np.uint16)[::-1]).save(tdir / "heightmap_ue.png")
     ue_layers = []
     for k, (name, _) in enumerate(MATERIALS):
-        lw = resample(world.splat[..., k], (ue_res, ue_res))
+        lw = _cells_at_vertices(world.splat[..., k], ue_res, world)
         p = tdir / f"ue_layer_{name}.png"
         Image.fromarray(np.round(np.clip(lw, 0, 1) * 255).astype(np.uint8)[::-1]).save(p)
         ue_layers.append({"name": name, "file": _rel(p, out)})
@@ -173,11 +183,11 @@ def export_water(world: World, out: Path, glb: bool = True) -> dict:
             "lakes": lakes, "rivers": rivers, "waterfalls": falls}
 
 
-def export_scatter(world: World, out: Path) -> list[dict]:
+def export_scatter(world: World, out: Path, scatter: dict | None = None) -> list[dict]:
     sdir = out / "scatter"
     sdir.mkdir(parents=True, exist_ok=True)
     entries = []
-    for kind, arr in world.scatter.items():
+    for kind, arr in (world.scatter if scatter is None else scatter).items():
         if len(arr) == 0:
             continue
         p = sdir / f"{kind}.bin"
@@ -187,21 +197,22 @@ def export_scatter(world: World, out: Path) -> list[dict]:
     return entries
 
 
-def _point(o) -> dict:
-    p = np.array([o.x, o.y, o.z])
+def _point(o, z: float | None = None) -> dict:
+    p = np.array([o.x, o.y, o.z if z is None else z])
     return {"position_unity": [float(v) for v in to_unity(p)],
             "position_unreal": [float(v) for v in to_unreal(p)]}
 
 
 def build_manifest(world: World, vol: VolumeResult, terrain: dict, meshes: list, water: dict,
-                   scatter: list, previews: dict) -> dict:
+                   scatter: list, previews: dict, poi_z: dict | None = None) -> dict:
     cfg = world.cfg
     pois = []
     for p in world.pois:
+        z = (poi_z or {}).get(p.id, p.z)          # on the volume surface where the terrain is cut
         d = {"id": p.id, "kind": p.kind, "name": p.name, "description": p.description, "x": p.x, "y": p.y,
-             "z": p.z, "importance": round(p.importance, 3), "region": p.region, "source": p.source,
+             "z": z, "importance": round(p.importance, 3), "region": p.region, "source": p.source,
              "props": p.props}
-        d.update(_point(p))
+        d.update(_point(p, z))
         pois.append(d)
     landmarks = []
     for lm in world.landmarks:
@@ -241,7 +252,7 @@ def build_manifest(world: World, vol: VolumeResult, terrain: dict, meshes: list,
         # where the play-test agents started (a natural player start)
         "spawn": None if world.spawn is None else {
             "x": float(world.spawn[0]), "y": float(world.spawn[1]),
-            "z": float(world.height_at(world.spawn[0], world.spawn[1]))},
+            "z": float(world.ground_at(world.spawn[0], world.spawn[1]))},
         "landmarks": landmarks,
         "caves": caves,
         "features": [f.to_dict() for f in world.features],
@@ -305,9 +316,11 @@ def export_world(world: World, vol: VolumeResult, out_dir: str | Path) -> Path:
     terrain = export_terrain(world, vol, out)
     meshes = export_meshes(world, vol, out, cfg.export.glb)
     water = export_water(world, out, cfg.export.glb)
-    scatter = export_scatter(world, out)
+    # objects where the volume replaces the heightfield stand on the volume surface
+    seated, poi_z = seat_objects(world, vol)
+    scatter = export_scatter(world, out, seated)
     previews = write_previews(world, vol, out) if cfg.export.previews else {}
-    manifest = build_manifest(world, vol, terrain, meshes, water, scatter, previews)
+    manifest = build_manifest(world, vol, terrain, meshes, water, scatter, previews, poi_z)
     path = out / "world.json"
     path.write_text(json.dumps(strict_json(manifest), ensure_ascii=False, indent=1, default=_json_default,
                                allow_nan=False), encoding="utf-8")
