@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Iterable
 
 import numpy as np
 
-from ..config import AIScopeConfig, ParamRange, get_by_path, set_by_path
+from ..config import AIScopeConfig, ConfigError, ParamRange, get_by_path, normalize_region, set_by_path, validate
 from ..grid import blur, chamfer_distance, dilate, slope, smoothstep
 from ..noise import Noise, derive_seed
 from ..volume.caves import CaveSystem
@@ -98,7 +98,7 @@ def validate_action(raw: Any, regions: Iterable[str], param_ranges: Any = None) 
         raise ActionError(f"unknown action '{kind}'")
     out: dict[str, Any] = {"type": kind, "reason": str(raw.get("reason", ""))[:240]}
     if kind != "set_param":
-        region = str(raw.get("region", "")).strip().upper()
+        region = normalize_region(raw.get("region", ""))
         if region not in set(regions):
             raise ActionError(f"bad region '{region}'")
         out["region"] = region
@@ -112,7 +112,7 @@ def validate_action(raw: Any, regions: Iterable[str], param_ranges: Any = None) 
         lo, hi = AMOUNT_RANGE[kind]
         try:
             amount = float(raw.get("amount", 0.3))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):   # json ints can exceed the float range
             amount = 0.3
         if not np.isfinite(amount):
             amount = 0.3
@@ -125,8 +125,8 @@ def validate_action(raw: Any, regions: Iterable[str], param_ranges: Any = None) 
         lo, hi = ranges[path]
         try:
             value = float(raw.get("value"))
-        except (TypeError, ValueError) as exc:
-            raise ActionError("set_param needs a numeric value") from exc
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ActionError("set_param needs a finite numeric value") from exc
         if not np.isfinite(value):
             raise ActionError("set_param needs a finite value")
         out["path"] = path
@@ -207,6 +207,11 @@ def apply_action(world: World, action: dict, rng: np.random.Generator,
             if abs(float(new) - float(old)) <= 1e-9 * max(1.0, abs(float(old))):
                 raise ActionError(f"{action['path']} is already {old}")   # a no-op would waste a quota slot
         set_by_path(world.cfg, action["path"], action["value"])
+        try:
+            validate(world.cfg)        # a configured range may reach values the pipeline rejects
+        except ConfigError as exc:
+            set_by_path(world.cfg, action["path"], old)
+            raise ActionError(f"{action['path']} = {action['value']:g} makes the configuration invalid: {exc}") from exc
         rec.update(old=old)
         world.edits.append(rec)
         return rec
@@ -351,7 +356,7 @@ def _dig_basin(world: World, site, rng, weight: np.ndarray | None = None,
     if weight is not None:
         w = w * weight
     cut = np.minimum(hb, target) - hb                 # <= 0
-    if max_cut is not None:
+    if max_cut is not None and np.isfinite(max_cut):     # tanh(x/inf)*inf would be NaN
         c = 0.9 * max(max_cut, 1e-3)
         cut = -c * np.tanh(-cut / c)
     world.height_base = hb + w * cut

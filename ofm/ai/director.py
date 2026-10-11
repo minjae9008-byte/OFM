@@ -7,7 +7,9 @@ action the change of ``height_base`` is verified and a violating action is
 reverted on its own (snapshot / restore), so one oversized edit does not
 spoil the rest. Every downstream simulation is then re-run, and the copy is
 kept only if the objective (simulation score, optionally blended with the
-model's own score) rises by more than ``scope.min_objective_gain``. Rejected
+model's own score) rises by more than ``scope.min_objective_gain``. The rebuild
+restores protected content and discards the candidate if protected terrain,
+water, caves or the spawn settlement changed anyway (``protect_rebuild``). Rejected
 actions are fed back so the next proposal differs.
 
 The loop stops when no allowed action remains (quotas spent), when the
@@ -33,7 +35,7 @@ from ..world import World
 from .actions import ActionError, action_key, apply_action
 from .evaluator import review
 from .llm import LocalLLM
-from .scope import ScopePolicy
+from .scope import ScopePolicy, ScopeViolation
 
 
 def clone_world(world: World) -> World:
@@ -180,7 +182,22 @@ def run_director(world: World, llm: LocalLLM | None, iterations: int | None = No
             say(f"director: iteration {it}: none of {len(actions)} action(s) could be applied")
             continue
         say(f"director: iteration {it}, applying {len(applied)} action(s) and rebuilding")
-        rebuild(cand)
+        try:
+            rebuild(cand, protect=policy.protect_rebuild(world))
+        except ScopeViolation as exc:
+            why = f"rebuild changed protected content: {exc.reason}"
+            policy.revert_iteration(why, exc.stats)
+            rejected += [action_key(a) for a in applied]
+            entry = {"iteration": it, "accepted": False, "objective_before": current["objective"],
+                     "objective": current["objective"], "gain": 0.0, "sim_scores": current["sim_scores"],
+                     "source": current["source"], "critique": current["critique"],
+                     "actions": [_round(a) for a in applied], "failed": failed, "note": why}
+            world.history.append(entry)
+            current = review(world, llm, rejected, policy)
+            log_refusals(current, it)
+            note_fallback(entry, current)
+            say(f"director: iteration {it} discarded ({why})")
+            continue
         policy.commit()                  # tentative: the candidate's proposal must see the remaining quota
         cand_review = review(cand, llm, rejected, policy)
         log_refusals(cand_review, it)

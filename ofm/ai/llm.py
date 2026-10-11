@@ -38,7 +38,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from ..config import AIConfig
 from .schema import validate as validate_schema
@@ -63,6 +63,7 @@ def extract_json(text: str) -> dict | None:
         except (json.JSONDecodeError, ValueError):
             pass
         start = cand.find("{")
+        first = start
         while start >= 0:
             depth = 0
             in_str = False
@@ -91,8 +92,48 @@ def extract_json(text: str) -> dict | None:
                         except (json.JSONDecodeError, ValueError):
                             pass
                         break
+            else:
+                if start == first:
+                    # the outermost object never closes: the reply was cut off (output token
+                    # limit). Keep its complete members instead of falling back to the first
+                    # nested object, which would lose everything else.
+                    part = salvage_object(cand, start)
+                    if part:
+                        return part
             start = cand.find("{", start + 1)
     return None
+
+
+def salvage_object(text: str, start: int = 0) -> dict | None:
+    """Complete ``"key": value`` members of a JSON object that is truncated after them."""
+    dec = json.JSONDecoder()
+    i = text.find("{", start)
+    if i < 0:
+        return None
+    out: dict = {}
+    i += 1
+    n = len(text)
+    while True:
+        while i < n and text[i] in " \t\r\n,":
+            i += 1
+        if i >= n or text[i] != '"':
+            break
+        try:
+            key, i = dec.raw_decode(text, i)
+            while i < n and text[i] in " \t\r\n":
+                i += 1
+            if i >= n or text[i] != ":":
+                break
+            i += 1
+            while i < n and text[i] in " \t\r\n":
+                i += 1
+            value, i = dec.raw_decode(text, i)
+        except (json.JSONDecodeError, ValueError):
+            break
+        if i >= n and isinstance(value, (int, float)) and not isinstance(value, bool):
+            break                   # a number at the cut may itself be truncated ("3" of "35")
+        out[key] = value
+    return out or None
 
 
 @dataclass
@@ -108,6 +149,7 @@ REPAIR_PROMPT = ("Your previous reply could not be used:\n{errors}\n"
                  "Reply again with ONE corrected JSON object only, following the same format. No prose.")
 FORMAT_LEVELS = ("schema", "json", "plain")
 _FALLBACK_HTTP = (400, 415, 422, 500, 501)
+_FORMAT_REJECTED = (400, 415, 422, 501)
 
 
 class LocalLLM:
@@ -250,7 +292,11 @@ class LocalLLM:
                 self.seconds += time.perf_counter() - t0
                 if exc.code in _FALLBACK_HTTP and level < len(FORMAT_LEVELS) - 1:
                     level += 1                       # server rejected the format: degrade and retry
-                    self._format_level = max(self._format_level, level)
+                    if exc.code in _FORMAT_REJECTED:
+                        # only a clear "format not supported" is remembered; a 5xx may be a
+                        # transient failure (model reloading) and must not disable structured
+                        # output for the rest of the run
+                        self._format_level = max(self._format_level, level)
                     continue
                 raise
             except BaseException:
@@ -265,8 +311,12 @@ class LocalLLM:
 
     def chat_json(self, system: str, user: str, images: list[bytes] | None = None, schema: dict | None = None,
                   seed: int | None = None, name: str = "ofm_reply", retries: int | None = None,
-                  temperature: float | None = None) -> dict | None:
+                  temperature: float | None = None,
+                  check: Callable[[dict], list[str]] | None = None) -> dict | None:
         """Ask for one JSON object. Validates against ``schema`` and runs the repair loop.
+
+        ``check`` adds semantic errors the schema cannot express (e.g. an ``add_poi`` without a
+        region); they are quoted back in the repair turn like schema errors.
 
         Returns None when the model is unavailable, the budget is spent or no attempt parsed."""
         self.last_info = {"calls": 0, "repairs": 0, "errors": [], "valid": False, "format": None}
@@ -284,7 +334,8 @@ class LocalLLM:
                     {"type": "image_url",
                      "image_url": {"url": "data:image/png;base64," + base64.b64encode(b).decode("ascii")}}
                     for b in images]
-        messages: list[dict] = [{"role": "system", "content": system}, user_msg]
+        base: list[dict] = [{"role": "system", "content": system}, user_msg]
+        messages = base
         retries = self.scope.retries if retries is None else retries
         best: dict | None = None
         best_errors: list[str] = []
@@ -308,6 +359,11 @@ class LocalLLM:
                 errors = ["the reply is not a JSON object"]
             else:
                 errors = validate_schema(obj, schema) if schema is not None else []
+                if check is not None and not errors:
+                    try:
+                        errors = list(check(obj))[:12]
+                    except Exception as exc:      # a checker bug must not abort the request
+                        errors = [f"reply could not be checked ({type(exc).__name__})"]
                 if best is None or len(errors) < len(best_errors):
                     best, best_errors = obj, errors
             if obj is not None and not errors:
@@ -315,7 +371,9 @@ class LocalLLM:
                 self.last_error = ""
                 return obj
             self.last_info["errors"] = errors
-            messages = messages + [
+            # only the latest attempt is quoted back: the prompt budget reserves room for one
+            # repair turn, and accumulated turns would overflow num_ctx on the second repair
+            messages = base + [
                 {"role": "assistant", "content": text[:2000]},
                 {"role": "user", "content": REPAIR_PROMPT.format(errors="\n".join("- " + e for e in errors[:12]))},
             ]

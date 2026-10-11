@@ -71,6 +71,7 @@ class _Handler(BaseHTTPRequestHandler):
     replies: list = []          # queue of reply payloads (dict -> JSON text, str -> raw text); last one repeats
     requests: list = []
     reject_schema = False       # answer 400 when a JSON schema is sent (old servers)
+    fail_codes: list = []       # HTTP error codes for the next POSTs (transient server failures)
 
     def log_message(self, *args):
         pass
@@ -96,6 +97,9 @@ class _Handler(BaseHTTPRequestHandler):
         req = json.loads(self.rfile.read(n))
         cls = type(self)
         cls.requests.append((self.path, req))
+        if cls.fail_codes:
+            self._send({"error": "model runner has unexpectedly stopped"}, cls.fail_codes.pop(0))
+            return
         schema_sent = isinstance(req.get("format"), dict) or \
             (req.get("response_format") or {}).get("type") == "json_schema"
         if cls.reject_schema and schema_sent:
@@ -114,6 +118,7 @@ def server():
     _Handler.requests = []
     _Handler.replies = [_reply([])]
     _Handler.reject_schema = False
+    _Handler.fail_codes = []
     srv = HTTPServer(("127.0.0.1", 0), _Handler)
     th = threading.Thread(target=srv.serve_forever, daemon=True)
     th.start()

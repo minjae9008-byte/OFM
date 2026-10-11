@@ -122,6 +122,16 @@ def select_pois(cands: list[POI], count: int, spacing: float, existing: list[POI
 def place_pois(world) -> list[POI]:
     dc = world.cfg.detail
     pinned = [p for p in world.pois if p.source in ("ai", "psych")]
+    # The agents start at the first settlement. A director rebuild re-runs the selection, and
+    # an edit anywhere could move or remove that settlement, so candidates would be scored
+    # from a different start. Keep it first (unless the edit flooded a procedural one).
+    spawn = next((p for p in world.pois if p.kind == "settlement"), None)
+    if spawn is not None:
+        pinned = [p for p in pinned if p is not spawn]
+        i = int(np.clip(spawn.x / world.cell, 0, world.size - 1))
+        j = int(np.clip(spawn.y / world.cell, 0, world.size - 1))
+        if spawn.source in ("ai", "psych") or not (world.water[j, i] or world.river_mask[j, i]):
+            pinned.insert(0, spawn)
     for p in pinned:  # keep director-placed POIs on the rebuilt ground
         p.z = _hz(world, p.x, p.y)
         p.region = world.region_of(p.x, p.y)

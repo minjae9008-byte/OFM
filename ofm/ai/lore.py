@@ -91,8 +91,16 @@ def _items(world: World) -> list[dict]:
     return items
 
 
+# reply size of one entry ("id": {"name": .., "description": one sentence}); Korean and
+# Japanese text costs about a token per character, so this is deliberately generous
+TOKENS_PER_ENTRY = 90
+
+
 def _chunks(items: list[dict], max_chars: int, max_items: int = 40) -> list[list[dict]]:
-    """Split items so each request stays under ``max_chars`` (and ``max_items``)."""
+    """Split items so each request stays under ``max_chars`` (and ``max_items``).
+
+    ``max_items`` must also bound the *reply*: the caller derives it from the output token
+    limit, otherwise the reply is cut off and the whole chunk is lost."""
     out: list[list[dict]] = []
     cur: list[dict] = []
     size = 16
@@ -120,7 +128,8 @@ def generate_lore(world: World, llm: LocalLLM | None) -> dict:
         system = ("You name places in a fantasy open world. Names must be evocative, consistent in style and "
                   "unique. Reply with ONE JSON object mapping each id to {\"name\": ..., \"description\": ...}. "
                   f"Write names and one-sentence descriptions in {lang_name}.")
-        for chunk in _chunks(items, llm.prompt_char_budget(system)):
+        per_reply = max(4, min(40, int(0.8 * llm.scope.max_output_tokens / TOKENS_PER_ENTRY)))
+        for chunk in _chunks(items, llm.prompt_char_budget(system), per_reply):
             if llm.budget_exhausted:
                 skipped = llm.budget_status()["reason"]
                 break

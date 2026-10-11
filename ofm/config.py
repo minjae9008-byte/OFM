@@ -8,8 +8,10 @@ parameters.
 from __future__ import annotations
 
 import copy
+import math
 import tomllib
 import typing
+import unicodedata
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -565,6 +567,11 @@ def load_config(path: str | Path | None = None, overrides: dict[str, Any] | None
     return cfg
 
 
+def normalize_region(name: Any) -> str:
+    """Canonical region name: 'Ｂ３', ' b 3 ' and 'B3' all become 'B3'."""
+    return "".join(unicodedata.normalize("NFKC", str(name)).split()).upper()
+
+
 def get_by_path(cfg: OFMConfig, dotted: str) -> Any:
     obj: Any = cfg
     for part in dotted.split("."):
@@ -625,7 +632,26 @@ def validate(cfg: OFMConfig) -> None:
     if bad:
         raise ConfigError(f"ai.scope.allowed_actions has unknown actions: {', '.join(bad)}")
     for pr in sc.param_ranges:
+        if not (math.isfinite(pr.min) and math.isfinite(pr.max)):
+            raise ConfigError(f"ai.scope.param_ranges: {pr.path} needs finite bounds")
         if pr.min > pr.max:
             raise ConfigError(f"ai.scope.param_ranges: {pr.path} has min > max")
+    # a misspelt protected region must fail closed, not silently leave the region editable
+    names = {f"{r}{c}" for r in "ABCDEFGH"[:ev.region_divs] for c in range(1, ev.region_divs + 1)}
+    for key in ("allowed_regions", "protected_regions"):
+        unknown = [str(r) for r in getattr(sc, key) if normalize_region(r) not in names]
+        if unknown:
+            raise ConfigError(f"ai.scope.{key} has unknown regions {unknown} "
+                              f"(evaluation.region_divs = {ev.region_divs}: A1..{'ABCDEFGH'[ev.region_divs - 1]}"
+                              f"{ev.region_divs})")
+    for key in ("max_height_delta_m", "max_total_height_delta_m", "max_modified_area_fraction"):
+        v = getattr(sc, key)
+        if not (math.isfinite(v) and v > 0):
+            raise ConfigError(f"ai.scope.{key} must be a finite number > 0")
+    for z in sc.protected_zones:
+        if not all(math.isfinite(v) for v in (z.x, z.y, z.radius)):
+            raise ConfigError("ai.scope.protected_zones need finite x, y and radius")
+    if not (math.isfinite(sc.protect_spawn_radius) and sc.protect_spawn_radius >= 0):
+        raise ConfigError("ai.scope.protect_spawn_radius must be a finite number >= 0")
     if cfg.fluvial.resolution_divisor not in (1, 2, 4):
         raise ConfigError("fluvial.resolution_divisor must be 1, 2 or 4")

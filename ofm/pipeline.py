@@ -64,8 +64,13 @@ def generate_base(cfg: OFMConfig, progress: Progress | None = None) -> World:
     return world
 
 
-def rebuild(world: World, progress: Progress | None = None, psych: bool = True) -> World:
-    """Recompute every stage downstream of ``world.height_base``."""
+def rebuild(world: World, progress: Progress | None = None, psych: bool = True,
+            protect: Callable[[World], None] | None = None) -> World:
+    """Recompute every stage downstream of ``world.height_base``.
+
+    ``protect`` runs after the detail stage and before evaluation: the AI director uses it to
+    put protected content back (``ScopePolicy.protect_rebuild``) and to abort the rebuild by
+    raising when protected terrain or water changed anyway."""
     from .detail.amplify import amplify
     from .detail.pois import place_pois
     from .detail.scatter import scatter_vegetation
@@ -119,6 +124,8 @@ def rebuild(world: World, progress: Progress | None = None, psych: bool = True) 
         world.hires, world.hires_spacing = amplify(world)
         world.scatter = scatter_vegetation(world)
         world.pois = place_pois(world)
+    if protect is not None:
+        protect(world)
     if cfg.quality.enabled:
         from .quality.metrics import analyze_terrain
         with _stage(world, "quality", progress):

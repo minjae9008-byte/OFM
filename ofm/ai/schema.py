@@ -6,12 +6,14 @@ not every server or model honours it, so replies are validated again here.
 Only the subset of JSON Schema (draft 2020-12) that our own schemas use is
 implemented: ``type`` (single or list), ``enum``, ``properties``,
 ``required``, ``additionalProperties: false``, ``items``, ``minItems`` /
-``maxItems``, ``minLength`` / ``maxLength`` and ``minimum`` / ``maximum``.
+``maxItems``, ``minLength`` / ``maxLength`` and ``minimum`` / ``maximum``;
+numbers must also be finite (JSON parsers accept ``NaN`` and ``Infinity``).
 Error messages carry a JSON path so they can be quoted back to the model in
 a repair turn ("$.actions[2].region: 'E5' is not one of ...").
 """
 from __future__ import annotations
 
+import math
 from typing import Any, Iterable
 
 _TYPES = {
@@ -51,6 +53,15 @@ def _validate(v: Any, s: dict, path: str, errors: list[str], limit: int) -> None
         opts = ", ".join(_short(o, 16) for o in s["enum"][:12]) + (" ..." if len(s["enum"]) > 12 else "")
         errors.append(f"{path}: {_short(v)} is not one of [{opts}]")
     if isinstance(v, (int, float)) and not isinstance(v, bool):
+        # json.loads accepts NaN / Infinity and integers beyond the float range; every
+        # comparison with NaN is False, so these would otherwise pass any bound
+        try:
+            finite = math.isfinite(float(v))
+        except OverflowError:
+            finite = False
+        if not finite:
+            errors.append(f"{path}: {_short(v)} is not a finite number")
+            return
         if "minimum" in s and v < s["minimum"]:
             errors.append(f"{path}: {v} is below the minimum {s['minimum']}")
         if "maximum" in s and v > s["maximum"]:

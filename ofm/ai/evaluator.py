@@ -95,18 +95,27 @@ def _instructions(world: World, policy: ScopePolicy, max_actions: int, language:
     lang = {"ko": "Korean", "en": "English", "ja": "Japanese"}.get(language, language)
     n = world.region_divs
     score_fields = ", ".join('"%s": 0-10' % k for k in SCORE_KEYS)
-    region = policy.allowed_regions[0] if policy.allowed_regions else "B2"
-    example = {"type": "add_poi", "region": region, "kind": "ruin", "reason": "..."}
-    if "add_poi" not in policy.allowed_actions:
-        t = next((a for a in policy.allowed_actions if a != "set_param"), None)
-        if t is not None:
-            example = {"type": t, "region": region, "reason": "..."}
-        elif policy.param_ranges:
-            example = {"type": "set_param", "path": next(iter(policy.param_ranges)), "value": 1.0, "reason": "..."}
+    # the example must itself be in scope: a hard-coded region steers small models out of it
+    example = None
+    if policy.allowed_regions:
+        region = policy.allowed_regions[0]
+        if "add_poi" in policy.allowed_actions:
+            example = {"type": "add_poi", "region": region, "kind": "ruin", "reason": "..."}
+        else:
+            t = next((a for a in policy.allowed_actions if a != "set_param"), None)
+            if t is not None:
+                example = {"type": t, "region": region, "reason": "..."}
+    if example is None and "set_param" in policy.allowed_actions and policy.param_ranges:
+        path, (lo, hi) = next(iter(policy.param_ranges.items()))
+        example = {"type": "set_param", "path": path, "value": round((lo + hi) / 2, 3), "reason": "..."}
+    if example is None or max_actions <= 0:
+        actions_text = '"actions": [] (no action is available in your scope)}\n'
+    else:
+        actions_text = ('"actions": [up to ' + str(max_actions) + " objects like "
+                        + json.dumps(example, ensure_ascii=False) + "]}\n")
     return ('Return JSON: {"scores": {' + score_fields + '}, '
             + '"critique": "2-4 sentences in ' + lang + '", '
-            + '"actions": [up to ' + str(max_actions) + " objects like "
-            + json.dumps(example, ensure_ascii=False) + "]}\n"
+            + actions_text
             + f"Regions: rows {REGION_ROWS[0]}-{REGION_ROWS[n - 1]} south to north, columns 1-{n} west to east. "
             + "Stay inside scope; an action outside it is rejected and wastes your turn.")
 
@@ -344,7 +353,7 @@ def _clean_scores(raw: Any) -> dict | None:
     for k in SCORE_KEYS:
         try:
             v = float(raw[k])
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             return None
         if not np.isfinite(v):
             return None
@@ -359,10 +368,13 @@ def _parse_sample(raw: dict, regions: list[str], policy: ScopePolicy, rejected: 
     for a in items:
         try:
             va = validate_action(a, regions, policy.param_ranges)
+            ok, reason = policy.check(va)
         except ActionError as exc:
             invalid.append(str(exc))
             continue
-        ok, reason = policy.check(va)
+        except Exception as exc:        # model data must never escape the reviewer as an exception
+            invalid.append(f"unusable action ({type(exc).__name__})")
+            continue
         if not ok:
             refused.append({"action": _compact(va), "reason": reason})
             continue
@@ -433,7 +445,10 @@ def _llm_review(world: World, llm: LocalLLM, rejected: list[str], policy: ScopeP
                 max_actions: int) -> dict | None:
     ai = world.cfg.ai
     regions = world.all_regions()
-    types = [a for a in policy.allowed_actions if policy.remaining(a) > 0]
+    # only actions that could pass the policy: region actions need an allowed region,
+    # set_param needs a configured range
+    types = [a for a in policy.allowed_actions if policy.remaining(a) > 0
+             and (policy.param_ranges if a == "set_param" else policy.allowed_regions)]
     schema = review_schema(SCORE_KEYS, types, policy.allowed_regions, LANDMARK_KINDS, POI_KINDS,
                            list(policy.param_ranges), max_actions if types else 0)
     prompt, pinfo = build_prompt_info(world, rejected, max_actions, ai.language, policy,
@@ -442,6 +457,19 @@ def _llm_review(world: World, llm: LocalLLM, rejected: list[str], policy: ScopeP
     if ai.vision:
         from ..preview import png_bytes, render_map
         images = [png_bytes(render_map(world, "biome"))]
+    def check(obj: dict) -> list[str]:
+        """Malformed actions the schema cannot express (missing region, path or value)."""
+        errs = []
+        items = obj.get("actions") if isinstance(obj.get("actions"), list) else []
+        for i, a in enumerate(items):
+            try:
+                validate_action(a, regions, policy.param_ranges)
+            except ActionError as exc:
+                errs.append(f"$.actions[{i}]: {exc}")
+            except Exception as exc:
+                errs.append(f"$.actions[{i}]: unusable ({type(exc).__name__})")
+        return errs
+
     calls0, repairs0 = llm.calls, llm.repairs
     # LLM-interaction knobs (samples, retries, budget, prompt size) come from the client's
     # scope, like every other request setting; the sandbox itself comes from ``policy``.
@@ -449,7 +477,8 @@ def _llm_review(world: World, llm: LocalLLM, rejected: list[str], policy: ScopeP
     parsed, schema_errors, formats = [], [], []
     for k in range(samples):
         seed = derive_seed(world.cfg.world.seed, "llm-review", llm.calls, k)
-        raw = llm.chat_json(SYSTEM_PROMPT, prompt, images, schema=schema, seed=seed, name="ofm_review")
+        raw = llm.chat_json(SYSTEM_PROMPT, prompt, images, schema=schema, seed=seed, name="ofm_review",
+                            check=check)
         info = llm.last_info
         if info.get("errors"):
             schema_errors.append(list(info["errors"][:6]))
