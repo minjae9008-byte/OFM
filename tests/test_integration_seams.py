@@ -294,3 +294,20 @@ def test_agents_do_not_walk_through_rock_landforms(small_world):
     # observers stand on the walked ground, not on top of the rock beside them
     ground = bilinear(w.ground(), per.ox / w.cell - 0.5, per.oy / w.cell - 0.5)
     assert np.allclose(per.oz - ground, w.cfg.psych.eye_height)
+
+
+def test_rainfall_is_the_steady_state_of_the_moisture_advection():
+    """Flat inland map, westerly wind: air entering at the west edge loses the fraction
+    base_rain * step of its moisture per cell, so the steady rainfall at the east edge is
+    (1 - r)^(n - 1) of the west edge's. Averaging the spin-up as well (the initial land
+    moisture raining out everywhere) made the lee too wet."""
+    from ofm.physics.climate import precipitation_field
+    from .conftest import small_config
+    n = 64
+    cfg = small_config(**{"world.size": n, "climate.wind_from_deg": 270.0})
+    cc = cfg.climate
+    p = precipitation_field(cfg, np.full((n, n), 100.0), np.zeros((n, n), bool), np.full((n, n), 10.0))
+    p = p - cc.background_mm
+    ratio = p[:, -4:].mean() / p[:, :4].mean()
+    steady = (1.0 - cc.base_rain * cfg.world.cell_size / 1000.0) ** (n - 1)
+    assert abs(ratio - steady) < 0.006

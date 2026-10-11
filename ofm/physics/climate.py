@@ -7,6 +7,8 @@ wet windward slopes and dry rain shadows on their lee side.
 """
 from __future__ import annotations
 
+from collections import deque
+
 import numpy as np
 
 from ..config import OFMConfig
@@ -53,14 +55,17 @@ def precipitation_field(cfg: OFMConfig, height: np.ndarray, ocean: np.ndarray,
     capacity = np.clip(np.exp(0.06 * (temperature - 20.0)), 0.1, 1.2)
 
     moisture = np.where(ocean, 1.0, cc.boundary_moisture)
-    precip = np.zeros_like(moisture)
     step = 1.0  # cells per iteration
     step_km = step * cell / 1000.0
-    iterations = int(size * 1.6)
     src_x = xx - wx * step
     src_y = yy - wy * step
     upwind_out = (src_x < 0) | (src_x > size - 1) | (src_y < 0) | (src_y > size - 1)
-    for _ in range(iterations):
+    # The wind field is steady, so the moisture field converges once air from the upwind
+    # edge and the sea has crossed the map. The rainfall is that steady state: averaging
+    # over the spin-up as well (ocean air not yet inland, the initial land moisture raining
+    # out) inflated inland rain shadows by up to 2.5x.
+    recent: deque = deque(maxlen=max(4, size // 16))
+    for it in range(int(size * 2.5)):
         m = bilinear(moisture, src_x, src_y)
         m = np.where(upwind_out, cc.boundary_moisture, m)
         m = np.where(ocean, np.minimum(1.0, m + 0.08), m)
@@ -68,10 +73,13 @@ def precipitation_field(cfg: OFMConfig, height: np.ndarray, ocean: np.ndarray,
         rain += np.maximum(m - capacity, 0.0) * cc.condensation * step_km
         rain = np.minimum(m, rain)
         rain = np.where(ocean, rain * 0.5, rain)
-        moisture = m - np.where(ocean, 0.0, rain)
-        precip += rain
-    precip /= iterations
-    precip = blur(precip, 1.2)
+        new = m - np.where(ocean, 0.0, rain)
+        change = float(np.abs(new - moisture).max())
+        moisture = new
+        recent.append(rain)
+        if it >= size and change < 1e-9:
+            break
+    precip = blur(np.mean(recent, axis=0), 1.2)
     # Normalise to annual millimetres.
     land = ~ocean
     ref = np.quantile(precip[land], 0.98) if land.any() else precip.max()
