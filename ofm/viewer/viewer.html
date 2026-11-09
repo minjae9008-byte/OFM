@@ -1,0 +1,955 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OFM 월드 뷰어</title>
+<style>
+:root {
+  --bg: #0f1216; --panel: #161a20; --panel2: #1d222a; --line: #2b323c; --text: #e6eaef; --muted: #98a3af;
+  --accent: #6cb4ff; --good: #5fd08a; --warn: #f2c14e; --bad: #ef6b6b; --chip: #252b34;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif; }
+body { display: flex; flex-direction: column; overflow: hidden; }
+header { display: flex; align-items: center; gap: 10px 16px; padding: 8px 14px; border-bottom: 1px solid var(--line);
+  background: var(--panel); flex-wrap: wrap; }
+header .brand { font-weight: 700; letter-spacing: .04em; color: var(--accent); }
+header .title { font-weight: 600; }
+header .sub { color: var(--muted); font-size: 12px; }
+nav { display: flex; gap: 4px; margin-left: auto; flex-wrap: wrap; }
+nav button { background: var(--chip); color: var(--text); border: 1px solid var(--line); padding: 6px 12px;
+  border-radius: 6px; cursor: pointer; font: inherit; }
+nav button.on { background: var(--accent); color: #0b1220; border-color: var(--accent); font-weight: 600; }
+main { flex: 1; position: relative; min-height: 0; }
+section.tab { position: absolute; inset: 0; display: none; }
+section.tab.on { display: block; }
+canvas { display: block; }
+#gl, #map2d { width: 100%; height: 100%; touch-action: none; }
+aside.panel { position: absolute; top: 10px; left: 10px; width: 270px; max-height: calc(100% - 20px); overflow: auto;
+  background: color-mix(in srgb, var(--panel) 92%, transparent); border: 1px solid var(--line); border-radius: 8px;
+  padding: 10px 12px; font-size: 13px; }
+aside.panel h3 { margin: 10px 0 6px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+aside.panel h3:first-child { margin-top: 0; }
+aside.panel label { display: flex; align-items: center; gap: 6px; padding: 2px 0; cursor: pointer; }
+aside.panel .row { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0; }
+aside.panel button, .btn { background: var(--chip); color: var(--text); border: 1px solid var(--line); border-radius: 6px;
+  padding: 4px 9px; cursor: pointer; font: inherit; font-size: 12px; }
+aside.panel button.on { border-color: var(--accent); color: var(--accent); }
+.places { max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; }
+.places div { padding: 4px 8px; cursor: pointer; border-bottom: 1px solid var(--line); display: flex; gap: 6px; align-items: center; }
+.places div:hover { background: var(--panel2); }
+.dot { width: 9px; height: 9px; border-radius: 50%; flex: none; display: inline-block; }
+.help { position: absolute; right: 10px; bottom: 10px; max-width: 520px; background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 12px; color: var(--muted); }
+.help b { color: var(--text); font-weight: 600; }
+#tip { position: absolute; pointer-events: none; background: rgba(10,12,16,.92); color: #fff; border: 1px solid #3a4350;
+  border-radius: 6px; padding: 6px 8px; font-size: 12px; max-width: 300px; display: none; z-index: 5; }
+#tip .k { color: #9fb6cc; font-size: 11px; }
+#labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+#labels div { position: absolute; transform: translate(-50%, -100%); white-space: nowrap; font-size: 11px; color: #fff;
+  text-shadow: 0 0 3px #000, 0 0 3px #000; padding-bottom: 4px; }
+.legend { margin-top: 8px; font-size: 12px; color: var(--muted); }
+.legend .bar { height: 8px; border-radius: 4px; margin: 4px 0; }
+.scroll { position: absolute; inset: 0; overflow: auto; padding: 18px 22px 40px; }
+.scroll h2 { margin: 18px 0 8px; font-size: 17px; }
+.scroll h2:first-child { margin-top: 0; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.card .name { font-size: 12px; color: var(--muted); }
+.card .val { font-size: 22px; font-weight: 700; margin: 2px 0 6px; }
+.meter { height: 6px; background: var(--chip); border-radius: 3px; overflow: hidden; }
+.meter i { display: block; height: 100%; border-radius: 3px; }
+table { border-collapse: collapse; width: 100%; max-width: 980px; font-size: 13px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.flag { color: var(--warn); }
+.ok { color: var(--good); }
+.bad { color: var(--bad); }
+.muted { color: var(--muted); }
+.rate { max-width: 860px; }
+.rate .item { display: grid; grid-template-columns: 170px 1fr 54px; gap: 10px; align-items: center; padding: 8px 0;
+  border-bottom: 1px solid var(--line); }
+.rate .item .desc { grid-column: 1 / -1; color: var(--muted); font-size: 12px; margin-top: -6px; }
+.rate input[type=range] { width: 100%; }
+.rate .v { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+.rate textarea, .rate input[type=text] { width: 100%; background: var(--panel); color: var(--text); border: 1px solid var(--line);
+  border-radius: 6px; padding: 8px; font: inherit; }
+.rate textarea { min-height: 90px; }
+.primary { background: var(--accent); color: #0b1220; border: none; border-radius: 6px; padding: 9px 16px; font-weight: 700;
+  cursor: pointer; font: inherit; font-weight: 700; }
+.note { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 6px;
+  padding: 10px 12px; margin: 10px 0; }
+.fatal { padding: 40px; font-size: 16px; }
+@media (max-width: 720px) {
+  aside.panel { width: calc(100% - 20px); max-height: 40%; }
+  .help { display: none; }
+  .rate .item { grid-template-columns: 1fr 60px; }
+  .rate .item input { grid-column: 1 / -1; }
+}
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">OFM</span>
+  <span class="title" id="title">월드</span>
+  <span class="sub" id="subtitle"></span>
+  <nav id="tabs">
+    <button data-tab="t3d" class="on">3D 보기</button>
+    <button data-tab="t2d">2D 지도</button>
+    <button data-tab="trep">평가 리포트</button>
+    <button data-tab="trate">직접 평가하기</button>
+  </nav>
+</header>
+<main>
+  <section class="tab on" id="t3d">
+    <canvas id="gl"></canvas>
+    <div id="labels"></div>
+    <aside class="panel" id="p3d">
+      <h3>카메라</h3>
+      <div class="row">
+        <button id="camOrbit" class="on">궤도 (1)</button>
+        <button id="camWalk">걷기 (2)</button>
+        <button id="camReset">처음 시점</button>
+        <button id="shot">스크린샷</button>
+      </div>
+      <h3>표시</h3>
+      <label><input type="checkbox" id="lyVolume" checked> 볼륨 메시 (동굴·아치·오버행)</label>
+      <label><input type="checkbox" id="lyWater" checked> 물 (바다·호수·하천)</label>
+      <label><input type="checkbox" id="lyMarkers" checked> 장소 표시</label>
+      <label><input type="checkbox" id="lyLabels" checked> 이름 라벨 (L)</label>
+      <label><input type="checkbox" id="lyXray"> 동굴 투시 (X)</label>
+      <label><input type="checkbox" id="lyPaths"> 에이전트 이동 경로</label>
+      <label><input type="checkbox" id="lyHoles"> 터레인 구멍만 강조</label>
+      <div class="row muted" style="font-size:12px">높이 과장
+        <input type="range" id="exag" min="1" max="3" step="0.25" value="1" style="flex:1">
+        <span id="exagV">×1</span></div>
+      <h3>장소로 이동</h3>
+      <div class="places" id="places"></div>
+    </aside>
+    <div class="help" id="help3d"></div>
+  </section>
+  <section class="tab" id="t2d">
+    <canvas id="map2d"></canvas>
+    <aside class="panel" id="p2d">
+      <h3>바탕 지도</h3>
+      <div id="baseLayers"></div>
+      <div class="legend" id="legend"></div>
+      <h3>겹쳐 보기</h3>
+      <label><input type="checkbox" id="ovPois" checked> 장소 (POI)</label>
+      <label><input type="checkbox" id="ovFeatures" checked> 암석 지형</label>
+      <label><input type="checkbox" id="ovCaves" checked> 동굴 통로</label>
+      <label><input type="checkbox" id="ovRivers" checked> 하천</label>
+      <label><input type="checkbox" id="ovPaths"> 에이전트 이동 경로</label>
+      <label><input type="checkbox" id="ovRegions"> 평가 지역 격자</label>
+      <label><input type="checkbox" id="ovNames" checked> 이름</label>
+      <div class="row"><button id="mapFit">전체 보기</button></div>
+      <div class="muted" style="font-size:12px;margin-top:6px">드래그: 이동 · 휠: 확대 · 지점 위에 올리면 정보</div>
+    </aside>
+  </section>
+  <section class="tab" id="trep"><div class="scroll" id="report"></div></section>
+  <section class="tab" id="trate"><div class="scroll"><div class="rate" id="rate"></div></div></section>
+  <div id="tip"></div>
+</main>
+<script src="viewer_data.js"></script>
+<script>
+(function () {
+'use strict';
+const D = window.OFM_DATA;
+if (!D) {
+  document.body.innerHTML = '<div class="fatal">viewer_data.js를 읽지 못했습니다. viewer.html과 같은 폴더에 viewer_data.js가 있어야 합니다.</div>';
+  return;
+}
+const W = D.world, E = D.evaluation || {}, T = D.terrain;
+const EXT = W.extent_m, SEA = W.sea_level;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+const fmt = (v, d = 1) => (v == null || Number.isNaN(v)) ? '–' : Number(v).toFixed(d);
+
+const LABELS = {
+  scenic: ['경관 선호', '보기 좋은 풍경인가 (Kaplan 선호 모델)'],
+  variety: ['다양성', '지형·바이옴·볼거리가 다채로운가'],
+  mystery: ['미스터리', '가려진 곳 너머가 궁금해지는가'],
+  prospect_refuge: ['조망-피신', '멀리 내다볼 곳과 몸을 숨길 곳이 고루 있는가'],
+  terrain_quality: ['지형 품질', '지형이 자연스럽고 눈에 띄는 결함이 없는가'],
+  pacing: ['페이싱', '돌아다니는 동안 볼거리가 적당한 간격으로 나오는가'],
+  exploration: ['탐험', '돌아다니며 발견할 것이 충분한가'],
+  legibility: ['랜드마크 가독성', '눈에 띄는 랜드마크로 내 위치를 알 수 있는가'],
+  orientation: ['방향 감각', '길을 잃거나 같은 길을 되돌아가지 않고 다닐 수 있는가'],
+  overall: ['종합', '오픈월드 맵으로서 전체적으로 흥미로운가'],
+};
+const KIND_KO = {
+  settlement: '마을', summit: '정상', lakeshore: '호숫가', waterfall: '폭포', confluence: '합류점', cove: '만',
+  rock_formation: '암석 지형', cave_entrance: '동굴 입구', camp: '야영지', ruin: '유적', viewpoint: '전망대',
+  spire: '첨탑', arch: '아치', butte: '뷰트', monolith: '선돌', sea_stack: '해식주', sinkhole: '싱크홀', spring: '샘',
+  grotto: '굴 입구', sea_cave: '해식동굴 입구', sea: '해식동굴', karst: '카르스트', fissure: '균열', peak: '봉우리', spawn: '출발점',
+};
+const KIND_COLOR = {
+  settlement: [255, 170, 60], summit: [240, 240, 240], lakeshore: [110, 220, 230], waterfall: [150, 210, 255],
+  confluence: [90, 150, 255], cove: [80, 200, 170], rock_formation: [235, 110, 235], cave_entrance: [255, 220, 60],
+  feature: [235, 110, 235], cave: [255, 220, 60], spawn: [90, 230, 110], falls: [150, 210, 255], other: [255, 120, 120],
+};
+const PROFILE_COLORS = [[255, 120, 90], [90, 200, 255], [250, 210, 80], [170, 140, 255], [120, 230, 140], [255, 140, 210]];
+const kindKo = (k) => KIND_KO[k] || k;
+const kindCol = (k) => KIND_COLOR[k] || KIND_COLOR.other;
+const css = (c, a = 1) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+
+// ---------------------------------------------------------------- decoding
+function bytes(s) { const b = atob(s); const u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; }
+const u16 = (s) => { const b = bytes(s); return new Uint16Array(b.buffer, 0, b.length >> 1); };
+const u32 = (s) => { const b = bytes(s); return new Uint32Array(b.buffer, 0, b.length >> 2); };
+const f32 = (s) => { const b = bytes(s); return new Float32Array(b.buffer, 0, b.length >> 2); };
+
+// ---------------------------------------------------------------- header
+$('title').textContent = W.name || '월드';
+const sc = (E.scores || {});
+$('subtitle').textContent = `시드 ${W.seed} · ${(EXT / 1000).toFixed(1)} km × ${(EXT / 1000).toFixed(1)} km · ` +
+  `동굴 ${W.caves.length} · 호수 ${W.lakes.length} · 하천 ${W.rivers.length} · 장소 ${W.pois.length}` +
+  (sc.overall != null ? ` · 시뮬레이션 종합 ${fmt(sc.overall, 2)}/10` : '');
+document.title = `OFM · ${W.name} (시드 ${W.seed})`;
+
+// ---------------------------------------------------------------- tabs
+let active = 't3d';
+for (const b of document.querySelectorAll('#tabs button')) {
+  b.addEventListener('click', () => {
+    for (const x of document.querySelectorAll('#tabs button')) x.classList.toggle('on', x === b);
+    for (const s of document.querySelectorAll('section.tab')) s.classList.toggle('on', s.id === b.dataset.tab);
+    active = b.dataset.tab;
+    if (active === 't3d') { resize3d(); dirty = true; }
+    if (active === 't2d') { resize2d(); draw2d(); }
+  });
+}
+
+// ---------------------------------------------------------------- terrain (CPU copy)
+const N = T.n, SP = T.spacing;
+const H = new Float32Array(N * N);
+{ const q = u16(T.h), k = (T.hmax - T.hmin) / 65535; for (let i = 0; i < N * N; i++) H[i] = T.hmin + q[i] * k; }
+function groundAt(x, y) {
+  const u = Math.min(Math.max(x / SP, 0), N - 1.0001), v = Math.min(Math.max(y / SP, 0), N - 1.0001);
+  const i = Math.floor(u), j = Math.floor(v), fu = u - i, fv = v - j, a = j * N + i;
+  return (H[a] * (1 - fu) + H[a + 1] * fu) * (1 - fv) + (H[a + N] * (1 - fu) + H[a + N + 1] * fu) * fv;
+}
+
+// ---------------------------------------------------------------- markers (shared by 3D and 2D)
+const markers = [];
+for (const p of W.pois) {
+  markers.push({ type: 'poi', kind: p.kind, name: p.name || kindKo(p.kind), desc: p.description, x: p.x, y: p.y, z: p.z,
+    imp: p.importance, col: kindCol(p.kind), extra: `지역 ${p.region || '-'} · 중요도 ${fmt(p.importance, 2)}${p.source !== 'procedural' ? ' · ' + p.source : ''}` });
+}
+for (const f of W.features) {
+  markers.push({ type: 'feature', kind: f.kind, name: f.name || kindKo(f.kind), desc: f.description, x: f.x, y: f.y,
+    z: f.z + f.height, base: f.z, imp: 0.9, col: kindCol('feature'), extra: `높이 ${fmt(f.height, 0)} m · 반경 ${fmt(f.radius, 0)} m` });
+}
+for (const c of W.caves) {
+  for (const e of c.entrances) {
+    markers.push({ type: 'cave', kind: e.kind, name: (c.name || c.id) + ' · ' + kindKo(e.kind), desc: c.description,
+      x: e.x, y: e.y, z: e.z, imp: 0.8, col: kindCol('cave'), extra: `${kindKo(c.kind)} 동굴 · 길이 ${fmt(c.length_m, 0)} m` });
+  }
+}
+for (const f of (W.waterfalls || [])) {
+  markers.push({ type: 'falls', kind: 'waterfall', name: '폭포', desc: '', x: f.x, y: f.y, z: f.top, imp: 0.6,
+    col: kindCol('falls'), extra: `낙차 ${fmt(f.drop, 1)} m` });
+}
+if (W.spawn) {
+  markers.push({ type: 'spawn', kind: 'spawn', name: '출발점', desc: '플레이테스트 에이전트가 출발한 곳(플레이어 시작 위치로 쓰기 좋음)',
+    x: W.spawn.x, y: W.spawn.y, z: W.spawn.z, imp: 1.0, col: kindCol('spawn'), extra: '' });
+}
+// duplicates: a cave_entrance POI and its cave mouth are the same place
+const seen = new Set();
+for (const m of markers) {
+  const key = `${Math.round(m.x / 3)}_${Math.round(m.y / 3)}`;
+  if (m.type === 'cave' && seen.has(key)) m.dup = true;
+  if (m.type === 'poi' && m.kind === 'cave_entrance') seen.add(key);
+}
+function tipHtml(m) {
+  return `<b>${esc(m.name)}</b><div class="k">${esc(kindKo(m.kind))}${m.extra ? ' · ' + esc(m.extra) : ''}</div>` +
+    (m.desc ? `<div>${esc(m.desc)}</div>` : '') +
+    `<div class="k">x ${fmt(m.x, 0)} · y ${fmt(m.y, 0)} · 높이 ${fmt(m.base != null ? m.base : m.z, 1)} m</div>`;
+}
+const tip = $('tip');
+function showTip(html, x, y) {
+  tip.innerHTML = html; tip.style.display = 'block';
+  const r = tip.getBoundingClientRect(), mw = window.innerWidth, mh = window.innerHeight;
+  tip.style.left = Math.min(x + 14, mw - r.width - 6) + 'px';
+  tip.style.top = Math.min(y + 14, mh - r.height - 6) + 'px';
+}
+const hideTip = () => { tip.style.display = 'none'; };
+
+// agent paths as world points
+const agentPaths = [];
+if (D.agents) {
+  const G = D.agents.grid, cs = D.agents.cell;
+  const profiles = [...new Set(D.agents.paths.map((p) => p.profile))];
+  for (const p of D.agents.paths) {
+    const cells = u32(p.cells), pts = [];
+    for (const c of cells) pts.push([(c % G + 0.5) * cs, (Math.floor(c / G) + 0.5) * cs]);
+    agentPaths.push({ profile: p.profile, run: p.run, bored: p.bored, pts, col: PROFILE_COLORS[profiles.indexOf(p.profile) % PROFILE_COLORS.length] });
+  }
+}
+
+if (location.hash === '#rate' || location.hash === '#report' || location.hash === '#map') {
+  const t = { '#rate': 'trate', '#report': 'trep', '#map': 't2d' }[location.hash];
+  setTimeout(() => document.querySelector(`#tabs button[data-tab="${t}"]`).click(), 0);
+}
+
+// ================================================================= 3D
+const canvas = $('gl');
+const gl = canvas.getContext('webgl2', { antialias: true, preserveDrawingBuffer: false });
+let dirty = true;
+let resize3d = () => {};
+if (!gl) {
+  $('t3d').innerHTML = '<div class="fatal">이 브라우저는 WebGL2를 지원하지 않습니다. 최신 Chrome, Edge, Firefox, Safari에서 열어 주세요. 2D 지도와 리포트 탭은 사용할 수 있습니다.</div>';
+} else {
+  init3d();
+}
+
+function init3d() {
+  // ---- tiny matrix helpers (column-major)
+  const M = {
+    persp(fovy, asp, n, f) { const t = 1 / Math.tan(fovy / 2), nf = 1 / (n - f);
+      return new Float32Array([t / asp, 0, 0, 0, 0, t, 0, 0, 0, 0, (f + n) * nf, -1, 0, 0, 2 * f * n * nf, 0]); },
+    look(e, c, u) {
+      let zx = e[0] - c[0], zy = e[1] - c[1], zz = e[2] - c[2]; let l = Math.hypot(zx, zy, zz); zx /= l; zy /= l; zz /= l;
+      let xx = u[1] * zz - u[2] * zy, xy = u[2] * zx - u[0] * zz, xz = u[0] * zy - u[1] * zx; l = Math.hypot(xx, xy, xz) || 1; xx /= l; xy /= l; xz /= l;
+      const yx = zy * xz - zz * xy, yy = zz * xx - zx * xz, yz = zx * xy - zy * xx;
+      return new Float32Array([xx, yx, zx, 0, xy, yy, zy, 0, xz, yz, zz, 0,
+        -(xx * e[0] + xy * e[1] + xz * e[2]), -(yx * e[0] + yy * e[1] + yz * e[2]), -(zx * e[0] + zy * e[1] + zz * e[2]), 1]); },
+    mul(a, b) { const o = new Float32Array(16);
+      for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) { let s = 0; for (let k = 0; k < 4; k++) s += a[k * 4 + j] * b[i * 4 + k]; o[i * 4 + j] = s; }
+      return o; },
+  };
+
+  // ---- shaders
+  function prog(vs, fs) {
+    const p = gl.createProgram();
+    for (const [type, src] of [[gl.VERTEX_SHADER, vs], [gl.FRAGMENT_SHADER, fs]]) {
+      const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+      gl.attachShader(p, s);
+    }
+    gl.bindAttribLocation(p, 0, 'aPos'); gl.bindAttribLocation(p, 1, 'aNrm'); gl.bindAttribLocation(p, 2, 'aCol');
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+    const u = {}; const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+    for (let i = 0; i < n; i++) { const a = gl.getActiveUniform(p, i); u[a.name] = gl.getUniformLocation(p, a.name); }
+    return { p, u };
+  }
+  const lit = prog(`#version 300 es
+in vec3 aPos; in vec3 aNrm; in vec3 aCol;
+uniform mat4 uVP; uniform float uExag; uniform float uZ0;
+out vec3 vN; out vec3 vC; out vec3 vP;
+void main() { vec3 p = vec3(aPos.xy, uZ0 + (aPos.z - uZ0) * uExag);
+  vN = normalize(vec3(aNrm.xy * uExag, aNrm.z)); vC = aCol; vP = p; gl_Position = uVP * vec4(p, 1.0); }`,
+  `#version 300 es
+precision highp float;
+in vec3 vN; in vec3 vC; in vec3 vP;
+uniform vec3 uSun; uniform vec3 uCam; uniform vec3 uFog; uniform float uFogK; uniform float uAlpha;
+uniform float uWater; uniform vec3 uTint; uniform float uTintK;
+out vec4 frag;
+void main() {
+  vec3 n = normalize(vN);
+  vec3 base = mix(vC, uTint, uTintK);
+  float diff = max(dot(n, uSun), 0.0);
+  float hemi = 0.5 + 0.5 * n.z;
+  vec3 col = base * (0.30 + 0.30 * hemi + 0.78 * diff);
+  vec3 v = normalize(uCam - vP);
+  if (uWater > 0.5) {
+    vec3 h = normalize(uSun + v);
+    float fres = pow(1.0 - max(v.z, 0.0), 4.0);
+    col = mix(base * (0.55 + 0.45 * diff), vec3(0.72, 0.82, 0.92), 0.25 + 0.55 * fres) + 0.6 * pow(max(dot(n, h), 0.0), 120.0);
+  }
+  float d = length(uCam - vP);
+  float f = 1.0 - exp(-pow(d * uFogK, 1.6));
+  frag = vec4(mix(col, uFog, clamp(f, 0.0, 1.0)), uAlpha);
+}`);
+  const flat = prog(`#version 300 es
+in vec3 aPos; in vec3 aCol;
+uniform mat4 uVP; uniform float uSize; uniform float uExag; uniform float uZ0;
+out vec3 vC;
+void main() { vC = aCol; gl_Position = uVP * vec4(aPos.xy, uZ0 + (aPos.z - uZ0) * uExag, 1.0); gl_PointSize = uSize; }`,
+  `#version 300 es
+precision mediump float;
+in vec3 vC; uniform float uAlpha; uniform float uRound;
+out vec4 frag;
+void main() { if (uRound > 0.5) { vec2 q = gl_PointCoord - 0.5; if (dot(q, q) > 0.25) discard; }
+  frag = vec4(vC, uAlpha); }`);
+
+  function mesh(pos, nrm, col, idx, nrmType = gl.FLOAT, colNorm = true) {
+    const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+    const buf = (data, loc, size, type, norm) => {
+      const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, type, norm, 0, 0);
+    };
+    buf(pos, 0, 3, gl.FLOAT, false);
+    if (nrm) buf(nrm, 1, 3, nrmType, nrmType !== gl.FLOAT); else { gl.disableVertexAttribArray(1); gl.vertexAttrib3f(1, 0, 0, 1); }
+    if (col) buf(col, 2, 3, col instanceof Float32Array ? gl.FLOAT : gl.UNSIGNED_BYTE, colNorm && !(col instanceof Float32Array));
+    let count = pos.length / 3, type = null;
+    if (idx) { const e = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, e); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
+      count = idx.length; type = idx instanceof Uint32Array ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT; }
+    gl.bindVertexArray(null);
+    return { vao, count, type };
+  }
+
+  // ---- terrain
+  const tpos = new Float32Array(N * N * 3), tnrm = new Float32Array(N * N * 3);
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const a = j * N + i, o = a * 3;
+    tpos[o] = i * SP; tpos[o + 1] = j * SP; tpos[o + 2] = H[a];
+    const hl = H[j * N + Math.max(i - 1, 0)], hr = H[j * N + Math.min(i + 1, N - 1)];
+    const hd = H[Math.max(j - 1, 0) * N + i], hu = H[Math.min(j + 1, N - 1) * N + i];
+    const gx = (hr - hl) / (SP * (i > 0 && i < N - 1 ? 2 : 1)), gy = (hu - hd) / (SP * (j > 0 && j < N - 1 ? 2 : 1));
+    const l = Math.hypot(gx, gy, 1); tnrm[o] = -gx / l; tnrm[o + 1] = -gy / l; tnrm[o + 2] = 1 / l;
+  }
+  const trgb = bytes(T.rgb), holes = bytes(T.holes);
+  const nh = holes.reduce((s, v) => s + v, 0);
+  const tidx = new Uint32Array(((N - 1) * (N - 1) - nh) * 6), hidx = new Uint32Array(nh * 6);
+  for (let j = 0, m = 0, k = 0; j < N - 1; j++) for (let i = 0; i < N - 1; i++) {
+    const a = j * N + i, b = a + 1, c = a + N, d = c + 1;
+    if (holes[j * (N - 1) + i]) { hidx.set([a, b, d, a, d, c], k); k += 6; } else { tidx.set([a, b, d, a, d, c], m); m += 6; }
+  }
+  const terrain = mesh(tpos, tnrm, trgb, tidx);
+  const holeMesh = nh ? mesh(tpos, tnrm, trgb, hidx) : null;
+
+  // ---- volume meshes
+  const volume = [];
+  let volTris = 0;
+  for (const ch of D.volume) {
+    const q = u16(ch.p), n = q.length / 3, pos = new Float32Array(q.length);
+    for (let v = 0; v < n; v++) for (let c = 0; c < 3; c++) pos[v * 3 + c] = ch.lo[c] + q[v * 3 + c] / 65535 * ch.span[c];
+    const idx = ch.wide ? u32(ch.i) : u16(ch.i);
+    const nrm = new Float32Array(pos.length);
+    for (let t = 0; t < idx.length; t += 3) {
+      const a = idx[t] * 3, b = idx[t + 1] * 3, c = idx[t + 2] * 3;
+      const ux = pos[b] - pos[a], uy = pos[b + 1] - pos[a + 1], uz = pos[b + 2] - pos[a + 2];
+      const vx = pos[c] - pos[a], vy = pos[c + 1] - pos[a + 1], vz = pos[c + 2] - pos[a + 2];
+      const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      for (const o of [a, b, c]) { nrm[o] += nx; nrm[o + 1] += ny; nrm[o + 2] += nz; }
+    }
+    for (let v = 0; v < nrm.length; v += 3) { const l = Math.hypot(nrm[v], nrm[v + 1], nrm[v + 2]) || 1; nrm[v] /= l; nrm[v + 1] /= l; nrm[v + 2] /= l; }
+    volume.push(mesh(pos, nrm, bytes(ch.c), idx));
+    volTris += idx.length / 3;
+  }
+
+  // ---- water
+  const water = [];
+  const wcol = (n, c) => { const a = new Float32Array(n * 3); for (let i = 0; i < n; i++) a.set(c, i * 3); return a; };
+  if (D.water.ocean) {
+    const m = EXT * 12;                        // far enough for the haze to swallow the edge
+    water.push(mesh(new Float32Array([-m, -m, SEA, EXT + m, -m, SEA, EXT + m, EXT + m, SEA, -m, EXT + m, SEA]), null,
+      wcol(4, [0.13, 0.30, 0.47]), new Uint32Array([0, 1, 2, 0, 2, 3])));
+  }
+  for (const lk of D.water.lakes) {
+    const xy = f32(lk.xy), n = xy.length / 2, pos = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) { pos[i * 3] = xy[i * 2]; pos[i * 3 + 1] = xy[i * 2 + 1]; pos[i * 3 + 2] = lk.level; }
+    water.push(mesh(pos, null, wcol(n, [0.16, 0.36, 0.52]), u32(lk.i)));
+  }
+  for (const r of D.water.rivers) {
+    const pos = f32(r.xyz);
+    water.push(mesh(pos, null, wcol(pos.length / 3, [0.20, 0.42, 0.60]), u32(r.i)));
+  }
+
+  // ---- markers (pins), cave x-ray lines, agent paths
+  const pinPos = [], pinCol = [], dotPos = [], dotCol = [];
+  for (const m of markers) {
+    if (m.dup) continue;
+    const g = m.type === 'feature' ? m.z : m.z, top = g + (m.type === 'feature' ? 6 : 14);
+    const c = m.col.map((v) => v / 255);
+    pinPos.push(m.x, m.y, m.type === 'feature' ? m.base : m.z, m.x, m.y, top); pinCol.push(...c, ...c);
+    dotPos.push(m.x, m.y, top); dotCol.push(...c);
+    m.top = top;
+  }
+  const pins = mesh(new Float32Array(pinPos), null, new Float32Array(pinCol), null);
+  const dots = mesh(new Float32Array(dotPos), null, new Float32Array(dotCol), null);
+  const xr = [], xc = [];
+  W.caves.forEach((c) => {
+    const col = c.kind === 'sea' ? [0.4, 0.9, 1.0] : [1.0, 0.82, 0.25];
+    for (const s of c.segments) { xr.push(s[0], s[1], s[2], s[3], s[4], s[5]); xc.push(...col, ...col); }
+    for (const ch of c.chambers) {             // chamber outline: a horizontal ellipse
+      for (let k = 0; k < 16; k++) {
+        const a0 = k / 16 * Math.PI * 2, a1 = (k + 1) / 16 * Math.PI * 2;
+        xr.push(ch[0] + ch[3] * Math.cos(a0), ch[1] + ch[4] * Math.sin(a0), ch[2], ch[0] + ch[3] * Math.cos(a1), ch[1] + ch[4] * Math.sin(a1), ch[2]);
+        xc.push(1, 0.55, 0.2, 1, 0.55, 0.2);
+      }
+    }
+  });
+  const xray = xr.length ? mesh(new Float32Array(xr), null, new Float32Array(xc), null) : null;
+  const ap = [], ac = [];
+  for (const p of agentPaths) {
+    const c = p.col.map((v) => v / 255);
+    for (let k = 1; k < p.pts.length; k++) {
+      const [x0, y0] = p.pts[k - 1], [x1, y1] = p.pts[k];
+      const steps = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / (SP * 2)));
+      for (let s = 0; s < steps; s++) {
+        const t0 = s / steps, t1 = (s + 1) / steps;
+        const xa = x0 + (x1 - x0) * t0, ya = y0 + (y1 - y0) * t0, xb = x0 + (x1 - x0) * t1, yb = y0 + (y1 - y0) * t1;
+        ap.push(xa, ya, groundAt(xa, ya) + 2.5, xb, yb, groundAt(xb, yb) + 2.5); ac.push(...c, ...c);
+      }
+    }
+  }
+  const paths = ap.length ? mesh(new Float32Array(ap), null, new Float32Array(ac), null) : null;
+
+  // ---- camera
+  const cam = { mode: 'orbit', tx: EXT / 2, ty: EXT / 2, tz: 0, yaw: -Math.PI / 2 - 0.6, pitch: 0.62, dist: EXT * 0.95,
+    wx: EXT / 2, wy: EXT / 2, wyaw: 0, wpitch: -0.05 };
+  const exagEl = $('exag');
+  let exag = 1;
+  const Z0 = SEA;
+  function resetView() {
+    cam.tx = EXT / 2; cam.ty = EXT / 2; cam.tz = groundAt(EXT / 2, EXT / 2); cam.yaw = -Math.PI / 2 - 0.6; cam.pitch = 0.62; cam.dist = EXT * 0.95;
+    dirty = true;
+  }
+  resetView();
+  function eye() {
+    if (cam.mode === 'walk') {
+      const z = (groundAt(cam.wx, cam.wy) - Z0) * exag + Z0 + 1.7;
+      return [[cam.wx, cam.wy, z], [cam.wx + Math.cos(cam.wpitch) * Math.cos(cam.wyaw), cam.wy + Math.cos(cam.wpitch) * Math.sin(cam.wyaw), z + Math.sin(cam.wpitch)]];
+    }
+    const tz = (cam.tz - Z0) * exag + Z0;
+    const e = [cam.tx + cam.dist * Math.cos(cam.pitch) * Math.cos(cam.yaw), cam.ty + cam.dist * Math.cos(cam.pitch) * Math.sin(cam.yaw), tz + cam.dist * Math.sin(cam.pitch)];
+    return [e, [cam.tx, cam.ty, tz]];
+  }
+  function setMode(m) {
+    if (m === 'walk' && cam.mode !== 'walk') {
+      const [e, t] = eye();
+      cam.wx = cam.mode === 'orbit' ? cam.tx : e[0]; cam.wy = cam.ty; cam.wyaw = Math.atan2(t[1] - e[1], t[0] - e[0]); cam.wpitch = -0.05;
+      if (W.spawn && Math.hypot(cam.tx - EXT / 2, cam.ty - EXT / 2) < 1) { cam.wx = W.spawn.x; cam.wy = W.spawn.y; }
+    }
+    cam.mode = m; $('camOrbit').classList.toggle('on', m === 'orbit'); $('camWalk').classList.toggle('on', m === 'walk');
+    dirty = true;
+  }
+  $('camOrbit').onclick = () => setMode('orbit');
+  $('camWalk').onclick = () => setMode('walk');
+  $('camReset').onclick = () => { setMode('orbit'); resetView(); };
+  exagEl.oninput = () => { exag = +exagEl.value; $('exagV').textContent = '×' + exag; dirty = true; };
+  for (const id of ['lyVolume', 'lyWater', 'lyMarkers', 'lyLabels', 'lyXray', 'lyPaths', 'lyHoles']) $(id).onchange = () => { dirty = true; };
+  if (!paths) { $('lyPaths').disabled = true; $('lyPaths').parentElement.classList.add('muted'); }
+  if (!xray) { $('lyXray').disabled = true; $('lyXray').parentElement.classList.add('muted'); }
+  if (!nh) { $('lyHoles').disabled = true; $('lyHoles').parentElement.classList.add('muted'); }
+  $('help3d').innerHTML = '<b>궤도</b>: 왼쪽 드래그 회전 · 오른쪽 드래그(또는 Shift+드래그) 이동 · 휠 확대/축소 · 더블클릭 그 지점으로 이동<br>' +
+    '<b>걷기</b>: W A S D(또는 방향키)로 이동, 드래그로 시선, Shift 달리기 · 사람 눈높이(1.7 m)에서 지형을 따라갑니다<br>' +
+    `<b>단축키</b>: 1 궤도 · 2 걷기 · X 동굴 투시 · L 라벨 · R 처음 시점 &nbsp; <span>볼륨 삼각형 ${volTris.toLocaleString()}개 · 터레인 ${N}×${N}</span>`;
+
+  // places list
+  const places = $('places');
+  const sorted = markers.filter((m) => !m.dup).sort((a, b) => (b.type === 'spawn') - (a.type === 'spawn') || b.imp - a.imp);
+  for (const m of sorted) {
+    const d = document.createElement('div');
+    d.innerHTML = `<span class="dot" style="background:${css(m.col)}"></span><span>${esc(m.name)}</span><span class="muted" style="margin-left:auto;font-size:11px">${esc(kindKo(m.kind))}</span>`;
+    d.onclick = () => flyTo(m.x, m.y, m.base != null ? m.base : m.z, m.type === 'feature' ? 220 : 160);
+    places.appendChild(d);
+  }
+  function flyTo(x, y, z, dist) { setMode('orbit'); cam.tx = x; cam.ty = y; cam.tz = z; cam.dist = dist; cam.pitch = Math.max(cam.pitch, 0.35); dirty = true; }
+  // for scripted tours and screenshots: ofmViewer.look(x, y, dist, pitchDeg, yawDeg)
+  window.ofmViewer = {
+    look(x, y, dist = 300, pitch = 35, yaw = null) { setMode('orbit'); cam.tx = x; cam.ty = y; cam.tz = groundAt(x, y); cam.dist = dist;
+      cam.pitch = pitch * Math.PI / 180; if (yaw != null) cam.yaw = yaw * Math.PI / 180; dirty = true; },
+    walk(x, y, yawDeg = 0) { setMode('walk'); cam.wx = x; cam.wy = y; cam.wyaw = yawDeg * Math.PI / 180; cam.wpitch = -0.05; dirty = true; },
+  };
+
+  // ---- input
+  let drag = null;
+  const keys = new Set();
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  canvas.addEventListener('pointerdown', (e) => { canvas.setPointerCapture(e.pointerId); drag = { x: e.clientX, y: e.clientY, b: e.button, shift: e.shiftKey }; });
+  canvas.addEventListener('pointerup', () => { drag = null; });
+  canvas.addEventListener('pointermove', (e) => {
+    if (!drag) { hover3d(e); return; }
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y; drag.x = e.clientX; drag.y = e.clientY;
+    if (cam.mode === 'walk') { cam.wyaw -= dx * 0.004; cam.wpitch = Math.max(-1.4, Math.min(1.4, cam.wpitch - dy * 0.004)); }
+    else if (drag.b === 2 || drag.shift) {
+      // grab the ground: it follows the pointer (right r = (-s, c), forward f = (-c, -s))
+      const k = cam.dist * 0.0016, c = Math.cos(cam.yaw), s = Math.sin(cam.yaw);
+      cam.tx += (s * dx - c * dy) * k; cam.ty += (-c * dx - s * dy) * k;
+      cam.tx = Math.max(-EXT * 0.2, Math.min(EXT * 1.2, cam.tx)); cam.ty = Math.max(-EXT * 0.2, Math.min(EXT * 1.2, cam.ty));
+      cam.tz = groundAt(cam.tx, cam.ty);
+    } else { cam.yaw -= dx * 0.005; cam.pitch = Math.max(0.03, Math.min(1.53, cam.pitch + dy * 0.004)); }
+    dirty = true; hideTip();
+  });
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    if (cam.mode === 'orbit') { cam.dist = Math.max(20, Math.min(EXT * 3, cam.dist * Math.exp(e.deltaY * 0.0012))); dirty = true; }
+  }, { passive: false });
+  canvas.addEventListener('dblclick', (e) => {
+    const hit = pickGround(e); if (hit) { setMode('orbit'); cam.tx = hit[0]; cam.ty = hit[1]; cam.tz = groundAt(hit[0], hit[1]); cam.dist = Math.min(cam.dist, 400); dirty = true; }
+  });
+  window.addEventListener('keydown', (e) => {
+    if (active !== 't3d' || e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    const k = e.key.toLowerCase();
+    if (k === '1') setMode('orbit'); else if (k === '2') setMode('walk');
+    else if (k === 'x' && xray) { $('lyXray').checked = !$('lyXray').checked; dirty = true; }
+    else if (k === 'l') { $('lyLabels').checked = !$('lyLabels').checked; dirty = true; }
+    else if (k === 'r') { setMode('orbit'); resetView(); }
+    keys.add(e.key.toLowerCase()); if (e.key === 'Shift') keys.add('shift');
+  });
+  window.addEventListener('keyup', (e) => { keys.delete(e.key.toLowerCase()); if (e.key === 'Shift') keys.delete('shift'); });
+
+  let VP = null, camPos = [0, 0, 0];
+  function project(x, y, z) {
+    const v = [VP[0] * x + VP[4] * y + VP[8] * z + VP[12], VP[1] * x + VP[5] * y + VP[9] * z + VP[13], VP[3] * x + VP[7] * y + VP[11] * z + VP[15]];
+    if (v[2] <= 0.01) return null;
+    return [(v[0] / v[2] * 0.5 + 0.5) * canvas.clientWidth, (1 - (v[1] / v[2] * 0.5 + 0.5)) * canvas.clientHeight, v[2]];
+  }
+  function pickGround(e) {
+    const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+    const [e0] = eye(); let best = null, bd = 1e9;
+    for (let s = 1; s < 400; s++) {           // coarse march along the view ray through screen samples
+      const d = s * s * 0.06 + s * 2;
+      const dir = rayDir(mx, my); const x = e0[0] + dir[0] * d, y = e0[1] + dir[1] * d, z = e0[2] + dir[2] * d;
+      if (x < 0 || y < 0 || x > EXT || y > EXT) continue;
+      if (z <= (groundAt(x, y) - Z0) * exag + Z0) { best = [x, y]; break; }
+      bd = d;
+    }
+    return best;
+  }
+  function rayDir(mx, my) {
+    const [e, t] = eye(); const fz = [t[0] - e[0], t[1] - e[1], t[2] - e[2]]; let l = Math.hypot(...fz); fz[0] /= l; fz[1] /= l; fz[2] /= l;
+    let rx = fz[1], ry = -fz[0], rz = 0; l = Math.hypot(rx, ry) || 1; rx /= l; ry /= l;
+    const ux = ry * fz[2] - rz * fz[1], uy = rz * fz[0] - rx * fz[2], uz = rx * fz[1] - ry * fz[0];
+    const th = Math.tan(FOV / 2), asp = canvas.clientWidth / canvas.clientHeight;
+    const sx = (mx / canvas.clientWidth * 2 - 1) * th * asp, sy = (1 - my / canvas.clientHeight * 2) * th;
+    const d = [fz[0] + rx * sx + ux * sy, fz[1] + ry * sx + uy * sy, fz[2] + rz * sx + uz * sy];
+    l = Math.hypot(...d); return [d[0] / l, d[1] / l, d[2] / l];
+  }
+  function hover3d(e) {
+    if (!VP || !$('lyMarkers').checked) { hideTip(); return; }
+    const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+    let best = null, bd = 16;
+    for (const m of markers) {
+      if (m.dup || m.top == null) continue;
+      const p = project(m.x, m.y, (m.top - Z0) * exag + Z0); if (!p) continue;
+      const d = Math.hypot(p[0] - mx, p[1] - my); if (d < bd) { bd = d; best = m; }
+    }
+    if (best) showTip(tipHtml(best), e.clientX, e.clientY); else hideTip();
+  }
+
+  // ---- labels
+  const labelBox = $('labels');
+  const labelEls = markers.filter((m) => !m.dup).map((m) => {
+    const d = document.createElement('div'); d.textContent = m.name; d.style.color = css(m.col.map((v) => Math.min(255, v + 40)));
+    labelBox.appendChild(d); return [m, d];
+  });
+  function placeLabels() {
+    const show = $('lyLabels').checked && $('lyMarkers').checked;
+    const range = cam.mode === 'walk' ? 900 : Math.max(500, cam.dist * 1.6);
+    for (const [m, d] of labelEls) {
+      let vis = false;
+      if (show) {
+        const z = (m.top - Z0) * exag + Z0, p = project(m.x, m.y, z);
+        const dist = Math.hypot(m.x - camPos[0], m.y - camPos[1], z - camPos[2]);
+        if (p && dist < range && p[0] > -50 && p[0] < canvas.clientWidth + 50 && p[1] > 0 && p[1] < canvas.clientHeight + 30) {
+          d.style.left = p[0] + 'px'; d.style.top = p[1] + 'px'; vis = true;
+        }
+      }
+      d.style.display = vis ? 'block' : 'none';
+    }
+  }
+
+  // ---- render
+  const FOV = 55 * Math.PI / 180;
+  const SUN = (() => { const v = [-0.45, -0.6, 0.66]; const l = Math.hypot(...v); return v.map((x) => x / l); })();
+  const FOG = [0.70, 0.79, 0.88];
+  resize3d = function () {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = Math.max(1, Math.floor(canvas.clientWidth * dpr)), h = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+    dirty = true;
+  };
+  window.addEventListener('resize', () => { if (active === 't3d') resize3d(); });
+  resize3d();
+  let last = performance.now();
+  let shotPending = false;
+  $('shot').onclick = () => { shotPending = true; dirty = true; };
+  function frame(now) {
+    const dt = Math.min(0.1, (now - last) / 1000); last = now;
+    if (cam.mode === 'walk' && keys.size && active === 't3d') {
+      const sp = (keys.has('shift') ? 22 : 7) * dt;
+      const f = [Math.cos(cam.wyaw), Math.sin(cam.wyaw)], rt = [Math.sin(cam.wyaw), -Math.cos(cam.wyaw)];
+      let mx = 0, my = 0;
+      if (keys.has('w') || keys.has('arrowup')) { mx += f[0]; my += f[1]; }
+      if (keys.has('s') || keys.has('arrowdown')) { mx -= f[0]; my -= f[1]; }
+      if (keys.has('d') || keys.has('arrowright')) { mx += rt[0]; my += rt[1]; }
+      if (keys.has('a') || keys.has('arrowleft')) { mx -= rt[0]; my -= rt[1]; }
+      if (mx || my) { const l = Math.hypot(mx, my); cam.wx = Math.max(0, Math.min(EXT, cam.wx + mx / l * sp)); cam.wy = Math.max(0, Math.min(EXT, cam.wy + my / l * sp)); dirty = true; }
+    }
+    if (dirty && active === 't3d') { render(); dirty = false; }
+    requestAnimationFrame(frame);
+  }
+  function render() {
+    const w = canvas.width, h = canvas.height;
+    gl.viewport(0, 0, w, h);
+    gl.clearColor(FOG[0], FOG[1], FOG[2], 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    const [e, t] = eye(); camPos = e;
+    const near = cam.mode === 'walk' ? 0.3 : Math.max(0.5, cam.dist / 3000), far = Math.max(EXT * 14, cam.dist * 6);
+    VP = M.mul(M.persp(FOV, w / h, near, far), M.look(e, t, [0, 0, 1]));
+    gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE); gl.disable(gl.BLEND); gl.depthMask(true);
+    gl.useProgram(lit.p);
+    gl.uniformMatrix4fv(lit.u.uVP, false, VP); gl.uniform3fv(lit.u.uSun, SUN); gl.uniform3fv(lit.u.uCam, e);
+    gl.uniform3fv(lit.u.uFog, FOG); gl.uniform1f(lit.u.uFogK, 1 / (EXT * 2.2)); gl.uniform1f(lit.u.uAlpha, 1);
+    gl.uniform1f(lit.u.uWater, 0); gl.uniform1f(lit.u.uTintK, 0); gl.uniform3fv(lit.u.uTint, [1, 0.3, 0.3]);
+    gl.uniform1f(lit.u.uExag, exag); gl.uniform1f(lit.u.uZ0, Z0);
+    const draw = (m, mode = gl.TRIANGLES) => { gl.bindVertexArray(m.vao); if (m.type) gl.drawElements(mode, m.count, m.type, 0); else gl.drawArrays(mode, 0, m.count); };
+    draw(terrain);
+    const showVol = $('lyVolume').checked;
+    if (holeMesh && !showVol) draw(holeMesh);              // without the volume, close the holes with the heightfield
+    if (showVol) {
+      if ($('lyHoles').checked) { gl.uniform1f(lit.u.uTintK, 0.55); }
+      for (const v of volume) draw(v);
+      gl.uniform1f(lit.u.uTintK, 0);
+    }
+    gl.useProgram(flat.p);
+    gl.uniformMatrix4fv(flat.u.uVP, false, VP); gl.uniform1f(flat.u.uExag, exag); gl.uniform1f(flat.u.uZ0, Z0);
+    gl.uniform1f(flat.u.uAlpha, 1); gl.uniform1f(flat.u.uRound, 0);
+    if ($('lyPaths').checked && paths) { gl.uniform1f(flat.u.uAlpha, 0.9); draw(paths, gl.LINES); }
+    if ($('lyMarkers').checked) {
+      gl.uniform1f(flat.u.uAlpha, 1); draw(pins, gl.LINES);
+      gl.uniform1f(flat.u.uSize, Math.max(6, 9 * (window.devicePixelRatio || 1))); gl.uniform1f(flat.u.uRound, 1); draw(dots, gl.POINTS); gl.uniform1f(flat.u.uRound, 0);
+    }
+    if ($('lyWater').checked && water.length) {
+      gl.useProgram(lit.p); gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false);
+      gl.uniform1f(lit.u.uWater, 1); gl.uniform1f(lit.u.uAlpha, 0.78); gl.uniform1f(lit.u.uExag, exag);
+      for (const m of water) draw(m);
+      gl.uniform1f(lit.u.uWater, 0); gl.depthMask(true); gl.disable(gl.BLEND);
+    }
+    if ($('lyXray').checked && xray) {
+      gl.useProgram(flat.p); gl.disable(gl.DEPTH_TEST); gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.uniform1f(flat.u.uAlpha, 0.85); draw(xray, gl.LINES); gl.disable(gl.BLEND); gl.enable(gl.DEPTH_TEST);
+    }
+    gl.bindVertexArray(null);
+    placeLabels();
+    if (shotPending) {
+      shotPending = false;
+      const a = document.createElement('a'); a.href = canvas.toDataURL('image/png');
+      a.download = `ofm_${W.name}_${W.seed}_view.png`; a.click();
+    }
+  }
+  requestAnimationFrame(frame);
+}
+
+// ================================================================= 2D map
+const map = $('map2d'), ctx = map.getContext('2d');
+const imgs = {};
+let base = D.layers.length ? D.layers[0].key : null;
+const view2 = { cx: EXT / 2, cy: EXT / 2, s: 1 };
+const baseBox = $('baseLayers');
+for (const L of D.layers) {
+  const im = new Image(); im.onload = () => { if (active === 't2d') draw2d(); }; im.src = L.file; imgs[L.key] = im;
+  const lab = document.createElement('label');
+  lab.innerHTML = `<input type="radio" name="base" value="${esc(L.key)}" ${L.key === base ? 'checked' : ''}> ${esc(L.label)}`;
+  lab.querySelector('input').onchange = () => { base = L.key; legend(); draw2d(); };
+  baseBox.appendChild(lab);
+}
+function legend() {
+  const L = D.layers.find((l) => l.key === base); if (!L) return;
+  const lg = L.legend || [];
+  $('legend').innerHTML = L.key === 'biome' ? `<div>${lg.map(esc).join(' · ')}</div>` :
+    `<div class="row" style="justify-content:space-between"><span>${esc(lg[0] || '')}</span><span>${esc(lg[1] || '')}</span></div>`;
+}
+legend();
+function fit2d() { const w = map.clientWidth, h = map.clientHeight; view2.s = Math.min(w, h) / EXT * 0.94; view2.cx = EXT / 2; view2.cy = EXT / 2; }
+let fitted = false;
+function resize2d() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  map.width = Math.max(1, map.clientWidth * dpr); map.height = Math.max(1, map.clientHeight * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (!fitted && map.clientWidth > 0) { fit2d(); fitted = true; }
+}
+const sx = (x) => (x - view2.cx) * view2.s + map.clientWidth / 2;
+const sy = (y) => (view2.cy - y) * view2.s + map.clientHeight / 2;
+const riverLines = D.water.rivers.map((r) => { const p = f32(r.xyz), pts = []; for (let k = 0; k + 5 < p.length; k += 6) pts.push([(p[k] + p[k + 3]) / 2, (p[k + 1] + p[k + 4]) / 2]); return pts; });
+function draw2d() {
+  const w = map.clientWidth, h = map.clientHeight;
+  ctx.fillStyle = '#0b0e12'; ctx.fillRect(0, 0, w, h);
+  const im = imgs[base];
+  ctx.imageSmoothingEnabled = view2.s * EXT / (im && im.width || 1) < 2;
+  if (im && im.complete && im.naturalWidth) ctx.drawImage(im, sx(0), sy(EXT), EXT * view2.s, EXT * view2.s);
+  ctx.strokeStyle = 'rgba(255,255,255,.25)'; ctx.strokeRect(sx(0), sy(EXT), EXT * view2.s, EXT * view2.s);
+  const line = (pts, col, wdt, dash) => { if (pts.length < 2) return; ctx.beginPath(); ctx.moveTo(sx(pts[0][0]), sy(pts[0][1]));
+    for (const p of pts) ctx.lineTo(sx(p[0]), sy(p[1])); ctx.strokeStyle = col; ctx.lineWidth = wdt; ctx.setLineDash(dash || []); ctx.stroke(); ctx.setLineDash([]); };
+  if ($('ovRegions').checked) {
+    const n = W.region_divs || 4, rows = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 1;
+    for (let k = 1; k < n; k++) { const t = EXT * k / n; ctx.beginPath(); ctx.moveTo(sx(t), sy(0)); ctx.lineTo(sx(t), sy(EXT)); ctx.moveTo(sx(0), sy(t)); ctx.lineTo(sx(EXT), sy(t)); ctx.stroke(); }
+    const regs = Object.fromEntries((E.regions || []).map((r) => [r.region, r]));
+    ctx.font = '12px system-ui'; ctx.fillStyle = 'rgba(255,255,255,.85)';
+    for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) {
+      const name = rows[r] + (c + 1), g = regs[name];
+      const x = sx(EXT * (c + 0.04) / n), y = sy(EXT * (r + 0.96) / n);
+      ctx.fillText(name + (g ? `  흥미 ${fmt(g.interest, 2)} · 지루함 ${fmt(g.boredom_seconds, 0)}s` : ''), x, y + 12);
+    }
+  }
+  if ($('ovRivers').checked) for (const r of riverLines) line(r, 'rgba(120,190,255,.95)', 1.6);
+  if ($('ovCaves').checked) for (const c of W.caves) for (const s of c.segments) line([[s[0], s[1]], [s[3], s[4]]], c.kind === 'sea' ? 'rgba(110,230,255,.9)' : 'rgba(255,210,70,.9)', 2, [4, 3]);
+  if ($('ovPaths').checked) for (const p of agentPaths) line(p.pts, css(p.col, 0.8), 1.4);
+  const names = $('ovNames').checked;
+  ctx.font = '12px system-ui'; ctx.textBaseline = 'bottom';
+  for (const m of markers) {
+    if (m.dup) continue;
+    if ((m.type === 'poi' || m.type === 'falls' || m.type === 'cave' || m.type === 'spawn') && !$('ovPois').checked) continue;
+    if (m.type === 'feature' && !$('ovFeatures').checked) continue;
+    const x = sx(m.x), y = sy(m.y);
+    ctx.fillStyle = css(m.col); ctx.strokeStyle = 'rgba(0,0,0,.8)'; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    if (m.type === 'feature') { ctx.moveTo(x, y - 7); ctx.lineTo(x - 6, y + 5); ctx.lineTo(x + 6, y + 5); ctx.closePath(); }
+    else if (m.type === 'spawn') { for (let k = 0; k < 10; k++) { const a = -Math.PI / 2 + k * Math.PI / 5, rr = k % 2 ? 3.5 : 8; ctx.lineTo(x + rr * Math.cos(a), y + rr * Math.sin(a)); } ctx.closePath(); }
+    else ctx.arc(x, y, m.type === 'poi' ? 4.5 : 3.5, 0, Math.PI * 2);
+    ctx.fill(); ctx.stroke();
+    if (names && (m.imp >= 0.6 || view2.s * EXT > 1600)) {
+      ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.75)'; ctx.strokeText(m.name, x + 7, y - 3); ctx.fillStyle = '#fff'; ctx.fillText(m.name, x + 7, y - 3);
+    }
+  }
+}
+let drag2 = null;
+map.addEventListener('pointerdown', (e) => { map.setPointerCapture(e.pointerId); drag2 = { x: e.clientX, y: e.clientY }; });
+map.addEventListener('pointerup', () => { drag2 = null; });
+map.addEventListener('pointermove', (e) => {
+  if (drag2) { view2.cx -= (e.clientX - drag2.x) / view2.s; view2.cy += (e.clientY - drag2.y) / view2.s; drag2.x = e.clientX; drag2.y = e.clientY; hideTip(); draw2d(); return; }
+  const r = map.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  let best = null, bd = 12;
+  for (const m of markers) { if (m.dup) continue; const d = Math.hypot(sx(m.x) - mx, sy(m.y) - my); if (d < bd) { bd = d; best = m; } }
+  if (best) showTip(tipHtml(best), e.clientX, e.clientY);
+  else {
+    const x = view2.cx + (mx - map.clientWidth / 2) / view2.s, y = view2.cy - (my - map.clientHeight / 2) / view2.s;
+    if (x >= 0 && y >= 0 && x <= EXT && y <= EXT) showTip(`<div class="k">x ${fmt(x, 0)} · y ${fmt(y, 0)}</div>높이 ${fmt(groundAt(x, y), 1)} m`, e.clientX, e.clientY);
+    else hideTip();
+  }
+});
+map.addEventListener('pointerleave', hideTip);
+map.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const r = map.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  const x = view2.cx + (mx - map.clientWidth / 2) / view2.s, y = view2.cy - (my - map.clientHeight / 2) / view2.s;
+  view2.s = Math.max(0.02, Math.min(40, view2.s * Math.exp(-e.deltaY * 0.0015)));
+  view2.cx = x - (mx - map.clientWidth / 2) / view2.s; view2.cy = y + (my - map.clientHeight / 2) / view2.s; draw2d();
+}, { passive: false });
+for (const id of ['ovPois', 'ovFeatures', 'ovCaves', 'ovRivers', 'ovPaths', 'ovRegions', 'ovNames']) $(id).onchange = draw2d;
+if (!agentPaths.length) { $('ovPaths').disabled = true; $('ovPaths').parentElement.classList.add('muted'); }
+$('mapFit').onclick = () => { fit2d(); draw2d(); };
+window.addEventListener('resize', () => { if (active === 't2d') { resize2d(); draw2d(); } });
+
+// ================================================================= report
+function meter(v, max = 10) {
+  const t = Math.max(0, Math.min(1, (v || 0) / max)), c = t >= 0.75 ? 'var(--good)' : t >= 0.5 ? 'var(--warn)' : 'var(--bad)';
+  return `<div class="meter"><i style="width:${(t * 100).toFixed(0)}%;background:${c}"></i></div>`;
+}
+(function report() {
+  const R = $('report'), m = E.metrics || {}, terr = E.terrain || {}, keys = E.score_keys || Object.keys(sc);
+  let h = '';
+  h += '<h2>흥미도 평가 (시뮬레이션)</h2>';
+  if (!Object.keys(sc).length) h += '<p class="muted">평가 결과가 없습니다.</p>';
+  h += '<div class="cards">' + keys.filter((k) => k in sc).map((k) =>
+    `<div class="card"><div class="name">${esc((LABELS[k] || [k])[0])}</div><div class="val">${fmt(sc[k], 2)}</div>${meter(sc[k])}</div>`).join('') + '</div>';
+  if (E.review && E.review.critique) h += `<div class="note"><b>디렉터 평</b> <span class="muted">(${esc(E.review.source || '')})</span><br>${esc(E.review.critique)}</div>`;
+  if (m.bored_fraction != null) {
+    h += '<h2>플레이테스트 에이전트</h2><table>';
+    const rows = [['지루하게 보낸 시간 비율', fmt(m.bored_fraction * 100, 1) + ' %'], ['평균 / 90% 이벤트 간격', `${fmt(m.mean_event_gap_s, 0)} s / ${fmt(m.p90_event_gap_s, 0)} s`],
+      ['분당 경험 이벤트', fmt(m.events_per_minute, 2)], ['본 면적 비율', fmt((m.coverage_seen || 0) * 100, 0) + ' %'],
+      ['길 잃은 시간 비율', fmt((m.lost_fraction || 0) * 100, 1) + ' %'], ['되돌아간 걸음 비율', fmt((m.backtrack_ratio || 0) * 100, 1) + ' %'],
+      ['랜드마크가 보이는 면적', fmt((m.landmark_coverage || 0) * 100, 0) + ' %'], ['에이전트 수 × 반복', `${m.agents || '-'} × ${m.runs || '-'}`]];
+    h += rows.map(([a, b]) => `<tr><th>${a}</th><td class="num">${b}</td></tr>`).join('') + '</table>';
+  }
+  const prof = E.profiles || {};
+  if (Object.keys(prof).length) {
+    h += '<h2>프로필별 점수</h2><table><tr><th>프로필</th><th class="num">페이싱</th><th class="num">탐험</th><th class="num">방향 감각</th><th class="num">종합</th></tr>';
+    for (const [k, p] of Object.entries(prof)) h += `<tr><td>${esc(k)}</td><td class="num">${fmt(p.scores.pacing, 2)}</td><td class="num">${fmt(p.scores.exploration, 2)}</td><td class="num">${fmt(p.scores.orientation, 2)}</td><td class="num">${fmt(p.scores.overall, 2)}</td></tr>`;
+    h += '</table>';
+  }
+  if (terr.score != null) {
+    h += `<h2>지형 품질 <span class="muted" style="font-weight:400">${fmt(terr.score, 2)} / 10</span></h2>`;
+    const flags = terr.flags || [];
+    h += flags.length ? `<div class="note flag">경고: ${flags.map(esc).join(' · ')}</div>` : '<div class="note ok">경고 없음: 모든 지표가 자연 지형 범위 안입니다.</div>';
+    const TQ = { slope: '경사 분포', hypsometry: '고도분포적분', drainage: '배수 밀도', spectrum: '파워 스펙트럼 기울기', pits: '가짜 웅덩이',
+      spikes: '스파이크', grid_artifacts: '격자 아티팩트', landforms: '지형형태 다양성', coastline: '해안선 프랙탈 차원' };
+    const tm = terr.metrics || {};
+    const MV = { slope: `${fmt(tm.slope_median_deg, 1)}°`, hypsometry: fmt(tm.hypsometric_integral, 3), drainage: `${fmt(tm.drainage_density_km, 3)} km/km²`,
+      spectrum: fmt(tm.spectral_slope, 2), pits: fmt((tm.pit_fraction || 0) * 100, 2) + ' %', spikes: fmt((tm.spike_fraction || 0) * 100, 3) + ' %',
+      grid_artifacts: `${fmt(tm.axis_artifact, 3)} / ${fmt(tm.diagonal_artifact, 3)}`, landforms: fmt(tm.landform_entropy, 3), coastline: fmt(tm.coastline_dimension, 3) };
+    h += '<table><tr><th>항목</th><th class="num">점수</th><th></th><th class="num">측정값</th></tr>';
+    for (const [k, v] of Object.entries(terr.sub_scores || {})) h += `<tr><td>${esc(TQ[k] || k)}</td><td class="num">${fmt(v, 2)}</td><td style="width:180px">${meter(v)}</td><td class="num">${esc(MV[k] || '')}</td></tr>`;
+    h += '</table>';
+  }
+  h += '<h2>월드 구성</h2><table>';
+  const vol = W.volume || {};
+  const rows2 = [['크기', `${(EXT / 1000).toFixed(2)} km × ${(EXT / 1000).toFixed(2)} km, 해수면 ${fmt(SEA, 1)} m`],
+    ['동굴', W.caves.map((c) => `${c.name || c.id}(${kindKo(c.kind)}, ${fmt(c.length_m, 0)} m, 입구 ${c.entrances.length})`).join(', ') || '없음'],
+    ['호수', W.lakes.map((l) => `${l.name || l.id}(${fmt(l.area_m2 / 1e4, 1)} ha, 깊이 ${fmt(l.max_depth, 1)} m${l.closed_basin ? ', 내륙호' : ''})`).join(', ') || '없음'],
+    ['하천', `${W.rivers.length}개, 총 ${fmt(W.rivers.reduce((s, r) => s + (r.length_m || 0), 0) / 1000, 1)} km · 폭포 ${(W.waterfalls || []).length}개`],
+    ['암석 지형', W.features.map((f) => `${f.name || kindKo(f.kind)}(${kindKo(f.kind)})`).join(', ') || '없음'],
+    ['식생', W.scatter.map((s) => `${s.type} ${s.count.toLocaleString()}`).join(', ') || '없음'],
+    ['볼륨 메시', `${vol.mesh_chunks || 0} 청크, 삼각형 ${(vol.triangles || 0).toLocaleString()}개, 터레인 구멍 ${(vol.hole_cells || 0).toLocaleString()}칸 (${esc(vol.mode || W.mesh_mode || '')})`]];
+  h += rows2.map(([a, b]) => `<tr><th style="width:120px">${a}</th><td>${esc(b)}</td></tr>`).join('') + '</table>';
+  if ((W.history || []).length) {
+    h += '<h2>AI 디렉터 개선 이력</h2><table><tr><th>반복</th><th>결과</th><th class="num">목적함수</th><th>액션</th></tr>';
+    for (const it of W.history) {
+      const acts = (it.actions || []).map((a) => `${a.type}(${[a.region, a.kind, a.path].filter(Boolean).join(', ')})`).join('; ');
+      h += `<tr><td>${it.iteration}</td><td class="${it.accepted ? 'ok' : 'bad'}">${it.accepted ? '채택' : '되돌림'}${it.source ? ' · ' + esc(it.source) : ''}</td><td class="num">${fmt(it.objective, 3)}</td><td>${esc(acts || '-')}</td></tr>`;
+    }
+    h += '</table>';
+  }
+  const tm2 = W.timings_s || {};
+  if (Object.keys(tm2).length) h += '<h2>소요 시간</h2><table>' + Object.entries(tm2).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${fmt(v, 2)} s</td></tr>`).join('') + '</table>';
+  R.innerHTML = h;
+})();
+
+// ================================================================= human rating
+(function rate() {
+  const R = $('rate'), keys = (E.score_keys || Object.keys(LABELS)).filter((k) => LABELS[k]);
+  const storeKey = `ofm-rating:${W.name}:${W.seed}:${W.created || ''}`;
+  let draft = {};
+  try { draft = JSON.parse(localStorage.getItem(storeKey) || '{}'); } catch (e) { draft = {}; }
+  const studio = location.protocol.startsWith('http') && /\/worlds\/([^/]+)\//.test(location.pathname);
+  let h = '<h2>직접 평가하기</h2>';
+  h += '<div class="note">3D 보기(특히 <b>걷기 모드</b>)와 2D 지도로 월드를 충분히 둘러본 뒤 항목마다 0–10점을 매겨 주세요. ' +
+    '<b>시뮬레이션 점수는 저장한 뒤에 보여 드립니다</b>(먼저 보면 판단이 끌려갑니다). 사람 점수와 시뮬레이션 점수의 차이는 평가 모델을 보정하는 데 씁니다.</div>';
+  for (const k of keys) {
+    const v = draft.ratings && draft.ratings[k] != null ? draft.ratings[k] : 5;
+    h += `<div class="item"><b>${esc(LABELS[k][0])}</b><input type="range" min="0" max="10" step="0.5" value="${v}" data-k="${k}"><span class="v" id="rv_${k}">${fmt(v, 1)}</span>` +
+      `<div class="desc">${esc(LABELS[k][1])}</div></div>`;
+  }
+  h += `<h2>메모</h2><textarea id="rateNotes" placeholder="좋았던 곳, 어색했던 곳(위치나 장소 이름을 함께 적어 주세요), 버그 등">${esc(draft.notes || '')}</textarea>`;
+  h += `<div class="row" style="display:flex;gap:10px;margin-top:10px;align-items:center"><input type="text" id="rateWho" placeholder="평가자 이름(선택)" value="${esc(draft.tester || '')}" style="max-width:260px">` +
+    `<button class="primary" id="rateSave">${studio ? '저장' : '평가 파일로 저장'}</button><span class="muted" id="rateMsg"></span></div>`;
+  h += '<div id="rateCompare"></div>';
+  R.innerHTML = h;
+  const collect = () => {
+    const ratings = {}; for (const el of R.querySelectorAll('input[type=range]')) ratings[el.dataset.k] = +el.value;
+    return { format: 'ofm-feedback', version: 1, world: W.name, seed: W.seed, created: W.created, rated_at: new Date().toISOString(),
+      tester: $('rateWho').value.trim(), ratings, notes: $('rateNotes').value, simulation: sc };
+  };
+  const saveDraft = () => { try { localStorage.setItem(storeKey, JSON.stringify(collect())); } catch (e) { /* private mode */ } };
+  for (const el of R.querySelectorAll('input[type=range]')) el.oninput = () => { $('rv_' + el.dataset.k).textContent = fmt(+el.value, 1); saveDraft(); };
+  $('rateNotes').oninput = saveDraft; $('rateWho').oninput = saveDraft;
+  function compare(fb) {
+    let h = '<h2>사람 vs 시뮬레이션</h2><table><tr><th>항목</th><th class="num">사람</th><th class="num">시뮬레이션</th><th class="num">차이</th></tr>';
+    let sum = 0, n = 0;
+    for (const k of keys) {
+      const a = fb.ratings[k], b = sc[k]; const d = b == null ? null : a - b;
+      if (d != null) { sum += Math.abs(d); n++; }
+      h += `<tr><td>${esc(LABELS[k][0])}</td><td class="num">${fmt(a, 1)}</td><td class="num">${fmt(b, 2)}</td><td class="num ${d == null ? '' : Math.abs(d) >= 2 ? 'bad' : Math.abs(d) >= 1 ? 'flag' : 'ok'}">${d == null ? '–' : (d > 0 ? '+' : '') + fmt(d, 2)}</td></tr>`;
+    }
+    h += `</table><p class="muted">평균 절대 차이 ${n ? fmt(sum / n, 2) : '–'}점. 차이가 2점 이상인 항목은 시뮬레이션이 사람의 느낌을 놓치고 있다는 신호입니다.</p>`;
+    $('rateCompare').innerHTML = h;
+  }
+  $('rateSave').onclick = async () => {
+    const fb = collect(); saveDraft();
+    let saved = false;
+    if (studio) {
+      try {
+        const world = location.pathname.match(/\/worlds\/([^/]+)\//)[1];
+        const r = await fetch('/api/feedback', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ world: decodeURIComponent(world), feedback: fb }) });
+        saved = r.ok; if (saved) $('rateMsg').textContent = '스튜디오에 저장했습니다 (feedback.json).';
+      } catch (e) { saved = false; }
+    }
+    if (!saved) {
+      const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(fb, null, 1)], { type: 'application/json' }));
+      a.download = `feedback_${W.name}_${W.seed}.json`; a.click();
+      $('rateMsg').textContent = '평가 파일을 내려받았습니다. 월드 폴더에 넣거나 개발자에게 보내 주세요.';
+    }
+    compare(fb);
+  };
+})();
+})();
+</script>
+</body>
+</html>

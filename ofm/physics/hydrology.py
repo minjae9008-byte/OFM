@@ -201,6 +201,10 @@ def simulate_hydrology(cfg: OFMConfig, height: np.ndarray, temperature: np.ndarr
     h_out = np.maximum(carved, floor)
 
     rivers, waterfalls = _trace_rivers(river, receiver, q, h_out, width, chan_depth, water, cell, hc, floor)
+    creeks = []
+    if 0.0 < hc.creek_min_discharge < hc.river_min_discharge:
+        creek = (q >= hc.creek_min_discharge) & ~river & ~water
+        creeks = _trace_creeks(creek, receiver, q, h_out, river | water, cell, hc)
 
     # Water table: subdued copy of topography relative to local base level.
     base = blur(np.where(water | river, h_out, filled), size * 0.06)
@@ -220,6 +224,7 @@ def simulate_hydrology(cfg: OFMConfig, height: np.ndarray, temperature: np.ndarr
         "playa": playa & ~lake_mask,
         "river_mask": river,
         "rivers": rivers,
+        "creeks": creeks,
         "waterfalls": waterfalls,
         "water_table": water_table,
     }
@@ -306,6 +311,61 @@ def _trace_rivers(river, receiver, q, h, width, chan_depth, water, cell, hc, flo
         })
     falls = _merge_falls(falls, cell * 2.5)
     return rivers, falls
+
+
+def _trace_creeks(creek, receiver, q, h, stop, cell, hc) -> list[dict]:
+    """Streams below the river threshold, traced down the receiver tree from their heads
+    until they reach a river, a lake, the sea, another creek or the map edge. The export grid
+    cannot carve channels this narrow, so they are not carved: the exporter drapes them as
+    thin water on the detail ground (``export.water.creek_meshes``)."""
+    size = creek.shape[1]
+    rec = receiver.reshape(-1)
+    cflat = creek.reshape(-1)
+    sflat = stop.reshape(-1)
+    hflat = h.reshape(-1)
+    qflat = q.reshape(-1)
+    donors = np.zeros(cflat.size, dtype=np.int32)
+    src = np.flatnonzero(cflat & (rec >= 0))
+    np.add.at(donors, rec[src], 1)
+    heads = np.flatnonzero(cflat & (donors == 0))
+    heads = heads[np.argsort(-hflat[heads])]
+    visited = np.zeros(cflat.size, dtype=bool)
+    out = []
+    for head in heads.tolist():
+        path, c, mouth = [], head, "edge"
+        while c >= 0:
+            if visited[c]:
+                path.append(c)
+                mouth = "join"
+                break
+            visited[c] = True
+            path.append(c)
+            nxt = int(rec[c])
+            if nxt < 0:
+                break
+            if sflat[nxt]:
+                path.append(nxt)
+                mouth = "water"
+                break
+            if not cflat[nxt]:
+                break
+            c = nxt
+        if len(path) < 3:
+            continue
+        p = np.array(path)
+        jj, ii = np.divmod(p, size)
+        pts = np.stack([(ii + 0.5) * cell, (jj + 0.5) * cell, hflat[p], qflat[p]], axis=1)
+        smooth = _chaikin(pts, 2)
+        widths = hc.channel_width_k * np.sqrt(np.maximum(smooth[:, 3], 0.0))
+        out.append({
+            "id": f"creek_{len(out)}", "kind": "creek",
+            "points": [[float(x), float(y), float(z)] for x, y, z, _ in smooth],
+            "width": [float(w) for w in widths],
+            "discharge": [float(v) for v in smooth[:, 3]],
+            "mouth": mouth,
+            "length_m": float(np.sum(np.hypot(np.diff(smooth[:, 0]), np.diff(smooth[:, 1])))),
+        })
+    return out
 
 
 def _merge_falls(falls: list[dict], radius: float) -> list[dict]:

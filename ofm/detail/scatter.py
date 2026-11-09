@@ -16,6 +16,36 @@ from ..noise import Noise, derive_seed
 from ..physics.biome import B, BIOME_VEG
 from .lakes import lake_surface, under_lake
 
+CREEK_GRID_M = 2.0
+
+
+def creek_mask(world) -> np.ndarray | None:
+    """Ground covered by creek water (2 m grid, dilated by one cell for the banks)."""
+    from ..export.water import creek_centrelines
+    lines = creek_centrelines(world, step=CREEK_GRID_M * 0.5)
+    if not lines:
+        return None
+    n = int(np.ceil(world.extent / CREEK_GRID_M)) + 1
+    m = np.zeros((n, n), dtype=bool)
+    for _, xy, half in lines:
+        r = np.ceil(half / CREEK_GRID_M).astype(int) + 1
+        i = np.clip((xy[:, 0] / CREEK_GRID_M).astype(int), 0, n - 1)
+        j = np.clip((xy[:, 1] / CREEK_GRID_M).astype(int), 0, n - 1)
+        for rr in np.unique(r):
+            sel = r == rr
+            for dj in range(-rr, rr + 1):
+                for di in range(-rr, rr + 1):
+                    m[np.clip(j[sel] + dj, 0, n - 1), np.clip(i[sel] + di, 0, n - 1)] = True
+    return m
+
+
+def on_creek(mask: np.ndarray | None, x, y) -> np.ndarray:
+    if mask is None:
+        return np.zeros(np.shape(x), dtype=bool)
+    n = mask.shape[0]
+    return mask[np.clip((np.asarray(y) / CREEK_GRID_M).astype(int), 0, n - 1),
+                np.clip((np.asarray(x) / CREEK_GRID_M).astype(int), 0, n - 1)]
+
 # type -> (min spacing m, base scale)
 SCATTER_TYPES = {
     "conifer": (7.0, 1.0),
@@ -77,6 +107,7 @@ def scatter_vegetation(world) -> dict[str, np.ndarray]:
     lake_level = np.where(world.lake_mask, world.lake_level, -np.inf) if world.lake_mask is not None \
         else np.full((world.size, world.size), -np.inf)
     surface = lake_surface(world)          # lake sheets reach past the lake cells to the shoreline
+    creeks = creek_mask(world)
     raw = {}
     for k_idx, (kind, (spacing, base_scale)) in enumerate(SCATTER_TYPES.items()):
         m = maps[kind]
@@ -101,7 +132,7 @@ def scatter_vegetation(world) -> dict[str, np.ndarray]:
         cj = np.clip((y / world.cell).astype(int), 0, world.size - 1)
         wet = (z < sea + 0.05) | (z < lake_level[cj, ci] + 0.05) | under_lake(world, x, y, z, surface)
         if kind != "reed":
-            wet |= world.river_mask[cj, ci]
+            wet |= world.river_mask[cj, ci] | on_creek(creeks, x, y)
         ok = ~wet & (rng.random(len(x)) < 1.0 - smoothstep(lo, hi, s_hi))
         x, y, z = x[ok], y[ok], z[ok]
         if len(x) == 0:

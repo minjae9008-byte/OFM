@@ -21,6 +21,7 @@ include = ["ofm*"]
 
 [tool.setuptools.package-data]
 "ofm.presets" = ["*.toml"]
+"ofm.viewer" = ["*.html"]
 "ofm.engines" = ["unity/Editor/*.cs", "unity/Runtime/*.cs", "unity/Shaders/*.shader", "unreal/*.py"]
 
 [tool.pytest.ini_options]

@@ -78,7 +78,7 @@ def write_previews(world, vol, out: Path) -> dict:
     return files
 
 
-def write_report(world, vol, out: Path, manifest: dict) -> None:
+def write_report(world, vol, out: Path, manifest: dict) -> dict:
     import json
     sim = world.evaluation.get("simulation", {})
     review = world.evaluation.get("review", {})
@@ -143,6 +143,7 @@ def write_report(world, vol, out: Path, manifest: dict) -> None:
     from .export.exporter import strict_json
     (out / "report.json").write_text(json.dumps(strict_json(report), ensure_ascii=False, indent=1, allow_nan=False,
                                                 default=str), encoding="utf-8")
+    return report
 
 
 def _fmt(v) -> str:

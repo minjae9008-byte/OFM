@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..grid import bilinear, dilate, label
-from ..physics.biome import BIOME_COLORS
+from ..physics.biome import BIOME_COLORS, MATERIALS
 from .density import DensityField
 from .mesher import Mesh, surface_nets
 
@@ -106,9 +106,19 @@ def _vertex_colors(world, field_: DensityField, mesh: Mesh) -> np.ndarray:
     strata = world.strata
     fold = strata.fold_at(p[:, 0], p[:, 1])
     rock = strata.color_table[strata.layer_index(p[:, 2], fold)]
-    bi = np.clip((p[:, 0] / world.cell).astype(int), 0, world.size - 1)
-    bj = np.clip((p[:, 1] / world.cell).astype(int), 0, world.size - 1)
-    ground = BIOME_COLORS[world.biome[bj, bi]].astype(np.float64)
+    # the ground tint is the terrain's own material blend (the splat the engines paint the
+    # heightfield with), interpolated the same way, so a volume patch filling a terrain hole
+    # matches the terrain around it instead of showing blocky biome cells
+    u, v = p[:, 0] / world.cell - 0.5, p[:, 1] / world.cell - 0.5
+    if world.splat is not None:
+        wts = np.stack([np.clip(bilinear(world.splat[..., k], u, v), 0.0, 1.0)
+                        for k in range(world.splat.shape[-1])], axis=-1)
+        wts /= np.maximum(wts.sum(axis=-1, keepdims=True), 1e-6)
+        ground = wts @ np.array([c for _, c in MATERIALS], dtype=np.float64)
+    else:
+        bi = np.clip((p[:, 0] / world.cell).astype(int), 0, world.size - 1)
+        bj = np.clip((p[:, 1] / world.cell).astype(int), 0, world.size - 1)
+        ground = BIOME_COLORS[world.biome[bj, bi]].astype(np.float64)
     d0 = field_.base_density(p[:, 0], p[:, 1], p[:, 2])
     up = np.clip((mesh.normals[:, 2] - 0.55) / 0.3, 0.0, 1.0)
     surface = np.clip(1.0 - np.abs(d0) / 3.0, 0.0, 1.0)

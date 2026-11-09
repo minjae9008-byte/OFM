@@ -103,6 +103,7 @@ def rebuild(world: World, progress: Progress | None = None, psych: bool = True,
         world.receiver = hy["receiver"]
         world.river_mask = hy["river_mask"]
         world.rivers = hy["rivers"]
+        world.creeks = hy["creeks"]
         world.waterfalls = hy["waterfalls"]
         world.water_table = hy["water_table"]
         # temperature follows the carved terrain

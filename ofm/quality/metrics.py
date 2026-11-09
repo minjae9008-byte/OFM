@@ -311,7 +311,7 @@ def analyze_terrain(world) -> dict:
 
     sl = slope_stats(h, cell, land)
     hyps = hypsometric_integral(h, land)
-    dr = drainage(world.rivers, land_km2)
+    dr = drainage(list(world.rivers) + list(getattr(world, "creeks", None) or []), land_km2)
     pits = pit_fraction(world)
     spikes = spike_fraction(hires, land_hi if land_hi is not None else land)
     axis, diag = grid_alignment(hires, spacing, land_hi if land_hi is not None else land)

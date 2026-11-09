@@ -150,6 +150,9 @@ class ClimateConfig:
 class HydrologyConfig:
     flow_scale: float = 400.0            # game-scale exaggeration of catchment discharge
     river_min_discharge: float = 1.0     # m3/s (after flow_scale) for a cell to count as river
+    # smaller streams the export grid cannot carve a channel for: exported as thin water
+    # draped on the ground (0 = none)
+    creek_min_discharge: float = 0.25
     min_lake_cells: int = 6
     min_lake_depth: float = 0.6
     channel_width_k: float = 2.4         # width = k * Q^0.5
@@ -464,6 +467,7 @@ class ExportConfig:
     engines: list[str] = field(default_factory=lambda: ["unity", "unreal"])
     previews: bool = True
     glb: bool = True
+    viewer: bool = True             # viewer.html: open the world in a browser (no engine needed)
     scatter_json_limit: int = 60000
 
 
@@ -672,6 +676,8 @@ def validate(cfg: OFMConfig) -> None:
     for path, v in _numbers(cfg):
         if not math.isfinite(v):
             raise ConfigError(f"{path} must be a finite number (got {v}); use a large value for 'no limit'")
+    if cfg.hydrology.creek_min_discharge < 0 or cfg.hydrology.river_min_discharge <= 0:
+        raise ConfigError("hydrology.river_min_discharge must be > 0 and creek_min_discharge >= 0")
     ev = cfg.evaluation
     if not 0.0 < ev.confidence < 1.0:
         raise ConfigError("evaluation.confidence must be between 0 and 1 (e.g. 0.9 for 90 %)")

@@ -7,6 +7,9 @@
     python -m ofm push unity     out/demo/world.json
     python -m ofm push unreal    out/demo/world.json
     python -m ofm batch unreal   out/demo/world.json --editor UnrealEditor-Cmd --project Game.uproject
+    python -m ofm studio                      # make, view and rate worlds in the browser
+    python -m ofm view out/demo               # open an exported world's viewer.html
+    python -m ofm selftest                    # check this installation (no pytest needed)
 """
 from __future__ import annotations
 
@@ -101,6 +104,12 @@ def cmd_generate(args) -> int:
     say(f"exported {manifest}")
     if scores:
         say("scores: " + ", ".join(f"{k}={v}" for k, v in scores.items()))
+    viewer = out / "viewer.html"
+    if viewer.exists():
+        say(f"viewer: {viewer.resolve()}  (open it in a browser, or: python -m ofm view {out})")
+        if args.open:
+            import webbrowser
+            webbrowser.open(viewer.resolve().as_uri())
     for engine in args.push or []:
         _push(engine, manifest, args)
     if args.json:
@@ -185,6 +194,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--push", action="append", choices=["unity", "unreal"], help="send to a running editor")
     g.add_argument("--quiet", action="store_true")
     g.add_argument("--json", action="store_true", help="print a JSON summary at the end")
+    g.add_argument("--open", action="store_true", help="open the viewer in a browser when done")
     ai_opts(g)
     engine_net(g)
     g.set_defaults(func=cmd_generate)
@@ -212,6 +222,27 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("ai-status", help="check whether a local LLM server is reachable")
     ai_opts(s)
     s.set_defaults(func=cmd_ai_status)
+
+    st = sub.add_parser("studio", help="make, view and rate worlds in the browser (local web app)")
+    st.add_argument("--out", default="out/studio", help="folder for the worlds (default out/studio)")
+    st.add_argument("--host", default="127.0.0.1", help="127.0.0.1 = this computer only; 0.0.0.0 = your network")
+    st.add_argument("--port", type=int, default=8770)
+    st.add_argument("--no-browser", action="store_true")
+    st.set_defaults(func=lambda a: __import__("ofm.studio", fromlist=["serve"]).serve(
+        a.out, a.host, a.port, not a.no_browser) or 0)
+
+    v = sub.add_parser("view", help="open an exported world's viewer (viewer.html)")
+    v.add_argument("world", help="export folder or its world.json")
+    v.add_argument("--serve", action="store_true", help="serve it over http (remote machines; ratings saved to the folder)")
+    v.add_argument("--host", default="127.0.0.1")
+    v.add_argument("--port", type=int, default=8771)
+    v.add_argument("--no-browser", action="store_true")
+    v.set_defaults(func=lambda a: __import__("ofm.studio", fromlist=["view"]).view(
+        a.world, a.serve, a.host, a.port, not a.no_browser))
+
+    t = sub.add_parser("selftest", help="check this installation: build a small world and verify it")
+    t.add_argument("--keep", metavar="DIR", help="keep the test world in DIR")
+    t.set_defaults(func=lambda a: __import__("ofm.selftest", fromlist=["run"]).run(a.keep))
 
     pr = sub.add_parser("presets", help="list bundled presets")
     pr.set_defaults(func=lambda a: print("\n".join(list_presets())) or 0)

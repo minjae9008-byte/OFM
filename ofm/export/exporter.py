@@ -30,7 +30,7 @@ from ..volume.builder import VolumeResult, seat_objects
 from ..world import World
 from .coords import to_unity, to_unreal
 from .meshio import write_glb, write_ofmmesh
-from .water import lake_meshes, river_meshes
+from .water import creek_meshes, lake_meshes, river_meshes
 
 UE_RESOLUTIONS = [127, 253, 505, 1009, 2017, 4033, 8129]
 
@@ -164,11 +164,11 @@ def export_water(world: World, out: Path, glb: bool = True) -> dict:
             write_glb(mesh, wdir / f"{name}.glb", origin, name, uvs, (0.25, 0.45, 0.65, 0.8), alpha_blend=True)
             e["glb"] = f"water/{name}.glb"
         lakes.append(e)
-    for river, mesh, uvs in river_meshes(world):
+    for river, mesh, uvs in list(river_meshes(world)) + list(creek_meshes(world)):
         origin = mesh.positions.min(axis=0)
         name = river["id"]
         write_ofmmesh(mesh, wdir / f"{name}.ofmmesh", origin, uvs)
-        e = {"id": name, "name": river.get("name", ""), "length_m": river["length_m"],
+        e = {"id": name, "kind": river.get("kind", "river"), "name": river.get("name", ""), "length_m": river["length_m"],
              "points": [round(float(v), 3) for p in river["points"] for v in p],
              "widths": [round(float(v), 3) for v in river["width"]],
              "origin": [float(v) for v in origin], "origin_unity": [float(v) for v in to_unity(origin)],
@@ -324,5 +324,8 @@ def export_world(world: World, vol: VolumeResult, out_dir: str | Path) -> Path:
     path = out / "world.json"
     path.write_text(json.dumps(strict_json(manifest), ensure_ascii=False, indent=1, default=_json_default,
                                allow_nan=False), encoding="utf-8")
-    write_report(world, vol, out, manifest)
+    report = write_report(world, vol, out, manifest)
+    if cfg.export.viewer:
+        from ..viewer import write_viewer
+        write_viewer(world, vol, out, manifest, report)
     return path

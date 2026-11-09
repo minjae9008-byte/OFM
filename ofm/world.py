@@ -73,6 +73,7 @@ class World:
     receiver: np.ndarray | None = None
     river_mask: np.ndarray | None = None
     rivers: list[dict] = field(default_factory=list)
+    creeks: list[dict] = field(default_factory=list)      # streams too small to carve (draped water)
     waterfalls: list[dict] = field(default_factory=list)
     water_table: np.ndarray | None = None
     # climate & surface

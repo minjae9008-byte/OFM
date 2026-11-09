@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OFM 스튜디오</title>
+<style>
+:root { --bg: #0f1216; --panel: #161a20; --panel2: #1d222a; --line: #2b323c; --text: #e6eaef; --muted: #98a3af;
+  --accent: #6cb4ff; --good: #5fd08a; --warn: #f2c14e; --bad: #ef6b6b; --chip: #252b34; }
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif; }
+header { padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; }
+header b { color: var(--accent); font-size: 17px; letter-spacing: .03em; }
+header span { color: var(--muted); }
+main { display: grid; grid-template-columns: minmax(300px, 400px) 1fr; gap: 18px; padding: 18px 20px 40px; max-width: 1500px; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+.box { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
+h2 { font-size: 15px; margin: 0 0 10px; }
+label.f { display: block; margin: 10px 0 4px; color: var(--muted); font-size: 12px; }
+select, input[type=number] { width: 100%; background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+  border-radius: 6px; padding: 7px 8px; font: inherit; }
+.row { display: flex; gap: 8px; align-items: center; }
+.desc { color: var(--muted); font-size: 12px; margin-top: 4px; min-height: 2.6em; }
+button { background: var(--chip); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 7px 12px;
+  cursor: pointer; font: inherit; }
+button.primary { background: var(--accent); color: #0b1220; border: none; font-weight: 700; width: 100%; padding: 10px; margin-top: 14px; }
+button:disabled { opacity: .5; cursor: default; }
+.bar { height: 8px; background: var(--chip); border-radius: 4px; overflow: hidden; margin: 10px 0 6px; }
+.bar i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .4s; }
+pre.log { background: #0b0e12; border: 1px solid var(--line); border-radius: 6px; padding: 8px; font-size: 11.5px; max-height: 260px;
+  overflow: auto; white-space: pre-wrap; color: #c9d3dd; margin: 6px 0 0; }
+.worlds { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 12px; }
+.w { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
+.w .t { font-weight: 700; }
+.w .m { color: var(--muted); font-size: 12px; }
+.w .sc { display: flex; gap: 14px; }
+.w .sc div { font-size: 12px; color: var(--muted); }
+.w .sc b { display: block; font-size: 20px; color: var(--text); }
+.w .acts { display: flex; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
+.w .acts a { text-decoration: none; }
+.flag { color: var(--warn); font-size: 12px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+th { color: var(--muted); font-weight: 600; }
+td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+.ok { color: var(--good); } .warn { color: var(--warn); } .bad { color: var(--bad); } .muted { color: var(--muted); }
+.steps { margin: 0; padding-left: 18px; color: var(--muted); }
+.steps li { margin: 3px 0; }
+.err { color: var(--bad); margin-top: 8px; font-size: 13px; }
+a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header><b>OFM 스튜디오</b><span>월드를 만들고 · 둘러보고 · 직접 평가합니다</span><span id="root" class="muted" style="margin-left:auto;font-size:12px"></span></header>
+<main>
+  <div>
+    <div class="box">
+      <h2>새 월드 만들기</h2>
+      <label class="f" for="preset">프리셋</label>
+      <select id="preset"></select>
+      <div class="desc" id="presetDesc"></div>
+      <label class="f" for="size">크기</label>
+      <select id="size"></select>
+      <label class="f" for="seed">시드 (같은 시드 = 같은 월드)</label>
+      <div class="row"><input type="number" id="seed" value="7" min="0" max="2147483646"><button id="dice" title="무작위 시드" style="white-space:nowrap;flex:none">무작위</button></div>
+      <label class="f" for="iters">AI 개선 반복 (0 = 평가만)</label>
+      <select id="iters"><option>0</option><option selected>1</option><option>2</option><option>3</option><option>4</option></select>
+      <label class="f" for="ai">로컬 AI</label>
+      <select id="ai">
+        <option value="auto">자동 (Ollama 등이 켜져 있으면 사용, 없으면 규칙 기반)</option>
+        <option value="none">사용 안 함 (규칙 기반 디렉터)</option>
+        <option value="ollama">Ollama</option>
+        <option value="openai">OpenAI 호환 서버 (LM Studio, llama.cpp 등)</option>
+      </select>
+      <label class="f" for="mesh">메시 모드</label>
+      <select id="mesh"><option value="hybrid">하이브리드 (터레인 + 볼륨 메시)</option><option value="full">전부 메시</option></select>
+      <button class="primary" id="go">생성</button>
+      <div class="err" id="err"></div>
+    </div>
+    <div class="box" id="jobBox" style="display:none">
+      <h2 id="jobTitle">생성 중</h2>
+      <div class="bar"><i id="jobBar"></i></div>
+      <div class="row"><span id="jobState" class="muted"></span><button id="cancel" style="margin-left:auto">취소</button></div>
+      <pre class="log" id="jobLog"></pre>
+    </div>
+    <div class="box">
+      <h2>테스트하는 방법</h2>
+      <ol class="steps">
+        <li>프리셋 <b>quick</b>, 크기 <b>2 km</b>로 생성해 보세요 (약 10초).</li>
+        <li>완성된 월드의 <b>뷰어 열기</b> → 3D 보기에서 둘러보기, <b>2</b>를 눌러 걷기 모드.</li>
+        <li><b>2D 지도</b>에서 동굴·장소·에이전트 이동 경로를 확인.</li>
+        <li><b>직접 평가하기</b> 탭에서 점수를 매기고 저장 → 여기에서 사람 점수와 시뮬레이션 점수를 비교.</li>
+      </ol>
+    </div>
+  </div>
+  <div>
+    <div class="box">
+      <div class="row" style="margin-bottom:10px"><h2 style="margin:0">만든 월드</h2><button id="refresh" style="margin-left:auto">새로고침</button></div>
+      <div class="worlds" id="worlds"><span class="muted">아직 없습니다. 왼쪽에서 하나 만들어 보세요.</span></div>
+    </div>
+    <div class="box" id="calBox" style="display:none">
+      <h2>사람 평가 vs 시뮬레이션</h2>
+      <div id="cal"></div>
+    </div>
+  </div>
+</main>
+<script>
+(function () {
+'use strict';
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+const fmt = (v, d = 2) => (v == null || Number.isNaN(v)) ? '–' : Number(v).toFixed(d);
+const LABEL = { scenic: '경관', variety: '다양성', mystery: '미스터리', prospect_refuge: '조망-피신', terrain_quality: '지형 품질',
+  pacing: '페이싱', exploration: '탐험', legibility: '랜드마크', orientation: '방향 감각', overall: '종합' };
+let presets = [];
+async function api(path, body) {
+  const r = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+async function init() {
+  const p = await api('/api/presets');
+  presets = p.presets;
+  $('preset').innerHTML = presets.map((x) => `<option value="${esc(x.name)}" ${x.name === 'quick' ? 'selected' : ''}>${esc(x.name)}</option>`).join('');
+  $('size').innerHTML = p.sizes.map((s) => `<option value="${s.size}" ${s.size === 128 ? 'selected' : ''}>${esc(s.label.replace('·', '—'))}</option>`).join('');
+  const desc = () => { const x = presets.find((q) => q.name === $('preset').value); $('presetDesc').textContent = x ? x.description : ''; };
+  $('preset').onchange = desc; desc();
+  $('dice').onclick = () => { $('seed').value = Math.floor(Math.random() * 100000); };
+  $('go').onclick = generate;
+  $('refresh').onclick = loadWorlds;
+  $('cancel').onclick = async () => { if (current) await api(`/api/jobs/${current}/cancel`, {}); };
+  await loadWorlds();
+  const jobs = (await api('/api/jobs')).jobs.filter((j) => j.status === 'running' || j.status === 'queued');
+  if (jobs.length) watch(jobs[jobs.length - 1].id);
+}
+let current = null;
+async function generate() {
+  $('err').textContent = '';
+  try {
+    const job = await api('/api/generate', { preset: $('preset').value, seed: +$('seed').value, size: +$('size').value,
+      iterations: +$('iters').value, ai: $('ai').value, mesh_mode: $('mesh').value });
+    watch(job.id);
+  } catch (e) { $('err').textContent = e.message; }
+}
+function watch(id) {
+  current = id; $('jobBox').style.display = 'block'; $('go').disabled = true;
+  const tick = async () => {
+    let j;
+    try { j = await api(`/api/jobs/${id}`); } catch (e) { setTimeout(tick, 1500); return; }
+    $('jobTitle').textContent = `${j.params.preset} · 시드 ${j.params.seed} · ${j.params.size}칸`;
+    $('jobBar').style.width = (j.progress * 100).toFixed(0) + '%';
+    const st = { queued: '대기 중', running: '생성 중', done: '완료', failed: '실패', cancelled: '취소됨' }[j.status];
+    $('jobState').textContent = `${st} · ${fmt(j.elapsed, 0)}초`;
+    const log = $('jobLog'); const atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
+    log.textContent = j.log.join('\n'); if (atEnd) log.scrollTop = log.scrollHeight;
+    $('cancel').style.display = (j.status === 'running' || j.status === 'queued') ? '' : 'none';
+    if (j.status === 'running' || j.status === 'queued') { setTimeout(tick, 900); return; }
+    $('go').disabled = false; current = null;
+    await loadWorlds();
+    if (j.status === 'done') {
+      $('jobState').innerHTML = `완료 · ${fmt(j.elapsed, 0)}초 · <a href="/worlds/${encodeURIComponent(j.world)}/viewer.html" target="_blank">뷰어 열기</a>`;
+    }
+  };
+  tick();
+}
+async function loadWorlds() {
+  const r = await api('/api/worlds');
+  $('root').textContent = '월드 폴더: ' + r.root;
+  const ws = r.worlds;
+  if (!ws.length) { $('worlds').innerHTML = '<span class="muted">아직 없습니다. 왼쪽에서 하나 만들어 보세요.</span>'; $('calBox').style.display = 'none'; return; }
+  $('worlds').innerHTML = ws.map((w) => {
+    const v = `/worlds/${encodeURIComponent(w.dir)}/viewer.html`;
+    const sim = w.scores.overall, hum = w.human.overall;
+    return `<div class="w"><div class="t">${esc(w.name)} <span class="muted" style="font-weight:400">· 시드 ${esc(w.seed)} · ${fmt(w.extent_m / 1000, 1)} km</span></div>
+      <div class="m">${esc(w.created || '')} · 동굴 ${w.counts.caves} · 호수 ${w.counts.lakes} · 장소 ${w.counts.pois}</div>
+      <div class="sc"><div>시뮬레이션<b>${fmt(sim)}</b></div><div>사람 평균<b>${hum == null ? '–' : fmt(hum)}</b></div><div>평가 수<b>${w.ratings}</b></div></div>
+      ${w.terrain_flags.length ? `<div class="flag">지형 경고: ${w.terrain_flags.map(esc).join(' · ')}</div>` : ''}
+      <div class="acts">${w.viewer ? `<a href="${v}" target="_blank"><button>뷰어 열기</button></a><a href="${v}#rate" target="_blank"><button>평가하기</button></a>` : '<span class="muted">viewer.html 없음</span>'}
+      <a href="/worlds/${encodeURIComponent(w.dir)}/report.md" target="_blank"><button>리포트(md)</button></a></div></div>`;
+  }).join('');
+  const rated = ws.filter((w) => w.ratings > 0);
+  $('calBox').style.display = rated.length ? 'block' : 'none';
+  if (rated.length) {
+    const keys = Object.keys(LABEL);
+    let h = '<table><tr><th>월드</th><th class="n">시뮬레이션 종합</th><th class="n">사람 종합</th><th class="n">차이</th></tr>';
+    for (const w of rated) {
+      const d = w.human.overall != null && w.scores.overall != null ? w.human.overall - w.scores.overall : null;
+      h += `<tr><td>${esc(w.name)} · ${esc(w.seed)}</td><td class="n">${fmt(w.scores.overall)}</td><td class="n">${fmt(w.human.overall)}</td>` +
+        `<td class="n ${d == null ? '' : Math.abs(d) >= 2 ? 'bad' : Math.abs(d) >= 1 ? 'warn' : 'ok'}">${d == null ? '–' : (d > 0 ? '+' : '') + fmt(d)}</td></tr>`;
+    }
+    h += '</table><h2 style="margin-top:16px">항목별 평균 절대 차이</h2><table><tr><th>항목</th><th class="n">평균 |사람 − 시뮬레이션|</th><th class="n">월드 수</th></tr>';
+    for (const k of keys) {
+      const ds = rated.filter((w) => w.human[k] != null && w.scores[k] != null).map((w) => Math.abs(w.human[k] - w.scores[k]));
+      if (!ds.length) continue;
+      const m = ds.reduce((a, b) => a + b, 0) / ds.length;
+      h += `<tr><td>${LABEL[k]}</td><td class="n ${m >= 2 ? 'bad' : m >= 1 ? 'warn' : 'ok'}">${fmt(m)}</td><td class="n">${ds.length}</td></tr>`;
+    }
+    h += '</table><p class="muted" style="font-size:12px">차이가 큰 항목은 시뮬레이션이 사람의 느낌을 놓치는 곳입니다. 평가 가중치(<code>evaluation.weights</code>)와 목표 대역(<code>evaluation.targets</code>)을 조정하는 근거로 쓰세요.</p>';
+    $('cal').innerHTML = h;
+  }
+}
+init().catch((e) => { document.body.insertAdjacentHTML('afterbegin', `<div class="err" style="padding:12px">${esc(e.message)}</div>`); });
+})();
+</script>
+</body>
+</html>
