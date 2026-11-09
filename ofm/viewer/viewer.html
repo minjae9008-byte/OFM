@@ -428,7 +428,17 @@ void main() { if (uRound > 0.5) { vec2 q = gl_PointCoord - 0.5; if (dot(q, q) > 
       for (const o of [a, b, c]) { nrm[o] += nx; nrm[o + 1] += ny; nrm[o + 2] += nz; }
     }
     for (let v = 0; v < nrm.length; v += 3) { const l = Math.hypot(nrm[v], nrm[v + 1], nrm[v + 2]) || 1; nrm[v] /= l; nrm[v + 1] /= l; nrm[v + 2] /= l; }
-    volume.push(mesh(pos, nrm, bytes(ch.c), idx));
+    // faces under the heightfield (cave mouths, passages, overhang recesses) get little sky
+    // light: darken them with depth so an opening reads as a dark hole, not a pale patch
+    const col = bytes(ch.c);
+    for (let v = 0; v < n; v++) {
+      const depth = groundAt(pos[v * 3], pos[v * 3 + 1]) - pos[v * 3 + 2];
+      if (depth > 0.5) {
+        const t = Math.min(1, (depth - 0.5) / 9), k = 1 - 0.78 * t * t * (3 - 2 * t);
+        col[v * 3] *= k; col[v * 3 + 1] *= k; col[v * 3 + 2] *= k;
+      }
+    }
+    volume.push(mesh(pos, nrm, col, idx));
     volTris += idx.length / 3;
   }
 
@@ -491,13 +501,13 @@ void main() { if (uRound > 0.5) { vec2 q = gl_PointCoord - 0.5; if (dot(q, q) > 
   const paths = ap.length ? mesh(new Float32Array(ap), null, new Float32Array(ac), null) : null;
 
   // ---- camera
-  const cam = { mode: 'orbit', tx: EXT / 2, ty: EXT / 2, tz: 0, yaw: -Math.PI / 2 - 0.6, pitch: 0.62, dist: EXT * 0.95,
+  const cam = { mode: 'orbit', tx: EXT / 2, ty: EXT / 2, tz: 0, yaw: -Math.PI / 2 - 0.6, pitch: 0.62, dist: EXT * 0.8,
     wx: EXT / 2, wy: EXT / 2, wyaw: 0, wpitch: -0.05 };
   const exagEl = $('exag');
   let exag = 1;
   const Z0 = SEA;
   function resetView() {
-    cam.tx = EXT / 2; cam.ty = EXT / 2; cam.tz = groundAt(EXT / 2, EXT / 2); cam.yaw = -Math.PI / 2 - 0.6; cam.pitch = 0.62; cam.dist = EXT * 0.95;
+    cam.tx = EXT / 2; cam.ty = EXT / 2; cam.tz = groundAt(EXT / 2, EXT / 2); cam.yaw = -Math.PI / 2 - 0.6; cam.pitch = 0.62; cam.dist = EXT * 0.8;
     dirty = true;
   }
   resetView();
@@ -630,16 +640,21 @@ void main() { if (uRound > 0.5) { vec2 q = gl_PointCoord - 0.5; if (dot(q, q) > 
     const d = document.createElement('div'); d.textContent = m.name; d.style.color = css(m.col.map((v) => Math.min(255, v + 40)));
     labelBox.appendChild(d); return [m, d];
   });
+  labelEls.sort((a, b) => (b[0].type === 'spawn') - (a[0].type === 'spawn') || b[0].imp - a[0].imp);
   function placeLabels() {
     const show = $('lyLabels').checked && $('lyMarkers').checked;
     const range = cam.mode === 'walk' ? 900 : Math.max(500, cam.dist * 1.6);
+    const boxes = [];
     for (const [m, d] of labelEls) {
       let vis = false;
       if (show) {
         const z = (m.top - Z0) * exag + Z0, p = project(m.x, m.y, z);
         const dist = Math.hypot(m.x - camPos[0], m.y - camPos[1], z - camPos[2]);
         if (p && dist < range && p[0] > -50 && p[0] < canvas.clientWidth + 50 && p[1] > 0 && p[1] < canvas.clientHeight + 30) {
-          d.style.left = p[0] + 'px'; d.style.top = p[1] + 'px'; vis = true;
+          const w = m.name.length * 7 + 8, b = [p[0] - w / 2, p[1] - 18, p[0] + w / 2, p[1]];
+          if (!boxes.some((o) => b[0] < o[2] && b[2] > o[0] && b[1] < o[3] && b[3] > o[1])) {
+            boxes.push(b); d.style.left = p[0] + 'px'; d.style.top = p[1] + 'px'; vis = true;
+          }
         }
       }
       d.style.display = vis ? 'block' : 'none';

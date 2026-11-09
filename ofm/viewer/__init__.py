@@ -18,7 +18,7 @@ import numpy as np
 from PIL import Image
 
 from ..grid import bilinear, normalize01
-from ..physics.biome import BIOME_COLORS, BIOME_NAMES, MATERIALS
+from ..physics.biome import BIOME_COLORS, BIOME_NAMES
 
 TEMPLATE_DIR = Path(__file__).resolve().parent
 VIEWER_MAX_VERTS = 1025          # terrain vertices per side shown (finer grids are strided)
@@ -33,7 +33,7 @@ def _b64(a: np.ndarray) -> str:
 
 
 def _terrain(world, vol) -> dict:
-    from ..export.exporter import _cells_at_vertices
+    from ..detail.materials import detail_splat, material_rgb
     h0 = world.hires
     n0 = h0.shape[0]
     stride = max(1, int(np.ceil((n0 - 1) / (VIEWER_MAX_VERTS - 1))))
@@ -41,11 +41,10 @@ def _terrain(world, vol) -> dict:
     n = h.shape[0]
     hmin, hmax = float(h.min()), float(h.max())
     q = np.round((h - hmin) / max(hmax - hmin, 1e-6) * 65535.0).astype("<u2")
-    w = np.stack([np.clip(_cells_at_vertices(world.splat[..., k], n, world), 0.0, 1.0)
-                  for k in range(len(MATERIALS))], axis=-1)
-    w /= np.maximum(w.sum(axis=-1, keepdims=True), 1e-6)
-    pal = np.array([c for _, c in MATERIALS], dtype=np.float64)
-    rgb = np.clip(w @ pal, 0, 255).astype(np.uint8)
+    w = detail_splat(world)[::stride, ::stride]
+    xs = np.arange(n) * world.hires_spacing * stride
+    X, Y = np.meshgrid(xs, xs)
+    rgb = np.clip(material_rgb(world, w, X, Y, h), 0, 255).astype(np.uint8)
     holes = np.zeros((n - 1, n - 1), dtype=np.uint8)
     if vol is not None and vol.holes is not None and vol.holes.any():
         hv = vol.holes[: (n - 1) * stride, : (n - 1) * stride]
@@ -82,7 +81,7 @@ def _volume(vol) -> list[dict]:
     return out
 
 
-def _water(world) -> dict:
+def _water(world, vol=None) -> dict:
     from ..export.water import creek_meshes, lake_meshes, river_meshes
     lakes = []
     for lake, mesh, _ in lake_meshes(world):
@@ -90,7 +89,7 @@ def _water(world) -> dict:
                       "xy": _b64(mesh.positions[:, :2].astype("<f4")),
                       "i": _b64(mesh.indices.reshape(-1).astype("<u4"))})
     rivers = []
-    for river, mesh, _ in list(river_meshes(world)) + list(creek_meshes(world)):
+    for river, mesh, _ in list(river_meshes(world)) + list(creek_meshes(world, vol)):
         rivers.append({"id": river["id"], "name": river.get("name", ""), "kind": river.get("kind", "river"),
                        "xyz": _b64(mesh.positions.astype("<f4")),
                        "i": _b64(mesh.indices.reshape(-1).astype("<u4"))})
@@ -227,7 +226,7 @@ def viewer_payload(world, vol, manifest: dict, report: dict | None = None, layer
         },
         "terrain": _terrain(world, vol),
         "volume": _volume(vol),
-        "water": _water(world),
+        "water": _water(world, vol),
         "agents": _agents(world),
         "layers": layers or [],
     }

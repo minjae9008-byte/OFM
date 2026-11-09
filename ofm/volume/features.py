@@ -11,6 +11,9 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from ..grid import smoothstep
+from ..noise import Noise
+
 FEATURE_KINDS = ("spire", "arch", "butte", "monolith", "sea_stack")
 
 
@@ -44,10 +47,10 @@ class Feature:
         others."""
         if self.kind == "arch":
             major, minor = self._arch_dims()
-            a = (np.array([-1.0, 1.0])[:, None] * major + np.linspace(-minor, minor, 3)[None, :]).ravel()
-            b = np.linspace(-1.35 * minor, 1.35 * minor, 3)
+            a = (np.array([-1.0, 1.0])[:, None] * major + np.linspace(-1.5 * minor, 1.5 * minor, 3)[None, :]).ravel()
+            b = np.linspace(-1.9 * minor, 1.9 * minor, 3)
         else:
-            r = self.radius * (1.1 if self.kind == "monolith" else 1.0)
+            r = self.radius * 1.25            # bulges and roughness reach past the nominal radius
             ang = np.linspace(0.0, 2.0 * np.pi, 12, endpoint=False)
             a = np.concatenate([[0.0], 0.5 * r * np.cos(ang), r * np.cos(ang)])
             b = np.concatenate([[0.0], 0.5 * r * np.sin(ang), r * np.sin(ang)])
@@ -106,10 +109,19 @@ class Feature:
                 return float(x[k]), float(y[k])
         return None
 
-    def bbox(self, pad: float = 4.0) -> tuple[np.ndarray, np.ndarray]:
-        r = self.radius
+    def _rough(self, X, Y, Z, amp: float) -> np.ndarray:
+        """Low-frequency 3D roughness (metres) that breaks the primitive's symmetry; seeded
+        by the landform's position, so it is the same shape in every stage."""
+        noise = getattr(self, "_noise", None)
+        if noise is None:
+            noise = self._noise = Noise(int(abs(self.x) * 7919 + abs(self.y) * 104729) % (2 ** 31))
+        wl = max(4.0, min(12.0, self.radius * 0.8))
+        return amp * noise.fbm3(X / wl, Y / wl, Z / (wl * 0.8), 3)
+
+    def bbox(self, pad: float = 6.0) -> tuple[np.ndarray, np.ndarray]:
+        r = self.radius * 1.25
         if self.kind == "arch":
-            r = self.height * 0.75 + self.radius
+            r = self.height * 0.75 + self.radius * 1.4
         lo = np.array([self.x - r - pad, self.y - r - pad, self.z - self.foot - pad])
         hi = np.array([self.x + r + pad, self.y + r + pad, self.top + pad])
         return lo, hi
@@ -122,13 +134,18 @@ class Feature:
         if self.kind in ("spire", "sea_stack", "monolith", "butte"):
             t = np.clip(dz / max(self.height, 1e-3), 0.0, 1.0)
             if self.kind == "spire":
-                r = self.radius * (1.0 - 0.62 * t ** 0.9)
+                # hoodoo: tapering column with a bulge at every resistant bed (~6 m) and a
+                # slightly wider caprock just under the top
+                beds = 0.07 * np.sin(2.0 * np.pi * dz / 6.0 + self.angle * 3.0)
+                cap = 0.16 * smoothstep(0.8, 0.9, t) * (1.0 - smoothstep(0.96, 1.0, t))
+                r = self.radius * (1.0 - 0.58 * t ** 0.85 + beds + cap)
             elif self.kind == "sea_stack":
-                r = self.radius * (1.0 - 0.3 * t)
+                r = self.radius * (1.0 - 0.3 * t + 0.06 * np.sin(2.0 * np.pi * dz / 5.0 + self.angle))
             elif self.kind == "butte":
                 r = self.radius * (1.0 - 0.12 * t) - 2.5 * np.round(t * 4) / 4
             else:
                 r = self.radius * (1.0 - 0.15 * t)
+            r = r - self._rough(X, Y, Z, 0.12 * self.radius if self.kind != "butte" else 0.05 * self.radius)
             if self.kind == "monolith":
                 c, s = np.cos(self.angle), np.sin(self.angle)
                 a = np.abs(dx * c + dy * s) - r * 0.45
@@ -143,9 +160,13 @@ class Feature:
             a = dx * c + dy * s            # along the span
             b = -dx * s + dy * c           # across (thickness)
             major, minor = self._arch_dims()
-            # a half ring above the base; below it the legs go straight down to the footing
-            q1 = np.hypot(a, np.maximum(dz, 0.0)) - major
-            ring = np.sqrt(q1 * q1 + (b / 1.35) ** 2) - minor
+            # a half ring above the base; below it the legs go straight down to the footing.
+            # Weathered arches are thick in the legs and thin at the crown
+            up = np.maximum(dz, 0.0)
+            theta = np.arctan2(up, np.abs(a) + 1e-6)              # 0 at the legs, pi/2 at the crown
+            m = minor * (1.3 - 0.48 * np.sin(theta))
+            q1 = np.hypot(a, up) - major
+            ring = np.sqrt(q1 * q1 + (b / 1.35) ** 2) - m - self._rough(X, Y, Z, 0.14 * minor)
             return np.maximum(ring, -(dz + self.foot))
         raise ValueError(f"unknown feature kind {self.kind}")
 

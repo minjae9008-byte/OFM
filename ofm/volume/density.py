@@ -37,6 +37,8 @@ class DensityField:
         n0 = self.hires.shape[0]
         c0 = np.arange(n0) * self.spacing / world.cell - 0.5
         wet_cells = world.water if world.river_mask is None else world.water | world.river_mask
+        if getattr(world, "creek_mask", None) is not None:
+            wet_cells = wet_cells | world.creek_mask      # creeks lie on the ground: no recess under them
         wet = bilinear(wet_cells.astype(np.float64), c0[None, :], c0[:, None])
         cliff_w = cliff_w * (1.0 - smoothstep(0.3, 0.7, wet))
         # Only coherent cliff faces get volumetric treatment, not isolated steep pixels.

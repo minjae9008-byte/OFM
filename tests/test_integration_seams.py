@@ -327,3 +327,39 @@ def test_cave_chambers_stay_under_the_ground(small_world, lake_world):
                 top = cz + rz * np.sqrt(1.0 - R * R)
                 ground = w.ground_at(cx + rx * R * np.cos(A), cy + ry * R * np.sin(A))
                 assert (ground - top).min() > 1.0, c.id
+
+
+def test_materials_follow_the_detail_ground(small_world):
+    """The engines' splat is computed on the detail grid: rock on the detail slopes (terrace
+    risers the simulation grid smooths over), not on 16 m cells."""
+    from ofm.detail.materials import detail_splat
+    w = small_world
+    m = detail_splat(w)
+    assert m.shape[:2] == w.hires.shape and np.allclose(m.sum(axis=-1), 1.0)
+    gx, gy = gradient(w.hires, w.hires_spacing)
+    s = np.degrees(np.arctan(np.hypot(gx, gy)))
+    land = w.hires > w.cfg.world.sea_level + 1.0
+    assert m[..., 4][land & (s > 52)].mean() > 0.5
+    assert m[..., 4][land & (s < 12)].mean() < 0.15
+
+
+def test_volume_takes_the_terrain_colour_where_it_follows_it(small_world):
+    from ofm.detail.materials import material_rgb, splat_at
+    from ofm.volume.builder import build_volume
+    w = small_world
+    vol = build_volume(w)
+    checked = 0
+    for ch in vol.chunks:
+        p = ch.mesh.positions
+        near = np.abs(p[:, 2] - w.ground_at(p[:, 0], p[:, 1])) < 0.05
+        if not near.any():
+            continue
+        q = p[near]
+        wts = np.clip(splat_at(w, q[:, 0], q[:, 1]), 0, 1)
+        wts /= wts.sum(axis=-1, keepdims=True)
+        want = material_rgb(w, wts, q[:, 0], q[:, 1], w.ground_at(q[:, 0], q[:, 1]))
+        under = np.clip((vol.field.base_density(q[:, 0], q[:, 1], q[:, 2]) - 6.0) / 10.0, 0, 1)[:, None]
+        got = ch.mesh.colors[near, :3].astype(float)
+        assert np.abs(got - want * (1 - 0.35 * under)).max() <= 12.0
+        checked += int(near.sum())
+    assert checked > 0

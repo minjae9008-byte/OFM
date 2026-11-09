@@ -174,3 +174,19 @@ def test_no_trees_on_creeks(creek_world):
     for kind, a in w.scatter.items():
         if kind != "reed" and len(a):
             assert not on_creek(m, a[:, 0], a[:, 1]).any(), kind
+
+
+def test_creeks_follow_the_volume_where_it_replaces_the_terrain(creek_world):
+    from ofm.export.water import creek_meshes
+    from ofm.volume.builder import build_volume, volume_ground
+    w = creek_world
+    vol = build_volume(w)
+    sp = w.hires_spacing
+    n = vol.deviation.shape[0]
+    for creek, mesh, _ in creek_meshes(w, vol):
+        P = mesh.positions
+        d = vol.deviation[np.clip((P[:, 1] / sp).astype(int), 0, n - 1), np.clip((P[:, 0] / sp).astype(int), 0, n - 1)]
+        if d.any():
+            z, ok = volume_ground(vol.field, P[d, 0], P[d, 1], P[d, 2])
+            gap = P[d, 2] - z
+            assert (gap[ok] <= 0.8).all() and (gap[ok] >= -0.3).all(), creek["id"]

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..grid import bilinear, dilate, label
-from ..physics.biome import BIOME_COLORS, MATERIALS
+from ..physics.biome import BIOME_COLORS
 from .density import DensityField
 from .mesher import Mesh, surface_nets
 
@@ -109,12 +109,14 @@ def _vertex_colors(world, field_: DensityField, mesh: Mesh) -> np.ndarray:
     # the ground tint is the terrain's own material blend (the splat the engines paint the
     # heightfield with), interpolated the same way, so a volume patch filling a terrain hole
     # matches the terrain around it instead of showing blocky biome cells
-    u, v = p[:, 0] / world.cell - 0.5, p[:, 1] / world.cell - 0.5
-    if world.splat is not None:
-        wts = np.stack([np.clip(bilinear(world.splat[..., k], u, v), 0.0, 1.0)
-                        for k in range(world.splat.shape[-1])], axis=-1)
+    terrain = None
+    if world.splat is not None and world.hires is not None:
+        from ..detail.materials import material_rgb, splat_at
+        wts = np.clip(splat_at(world, p[:, 0], p[:, 1]), 0.0, 1.0)
         wts /= np.maximum(wts.sum(axis=-1, keepdims=True), 1e-6)
-        ground = wts @ np.array([c for _, c in MATERIALS], dtype=np.float64)
+        ground = material_rgb(world, wts, p[:, 0], p[:, 1], p[:, 2])
+        gz = world.ground_at(p[:, 0], p[:, 1])
+        terrain = material_rgb(world, wts, p[:, 0], p[:, 1], gz)     # what the heightfield shows here
     else:
         bi = np.clip((p[:, 0] / world.cell).astype(int), 0, world.size - 1)
         bj = np.clip((p[:, 1] / world.cell).astype(int), 0, world.size - 1)
@@ -124,6 +126,12 @@ def _vertex_colors(world, field_: DensityField, mesh: Mesh) -> np.ndarray:
     surface = np.clip(1.0 - np.abs(d0) / 3.0, 0.0, 1.0)
     w = (up * surface)[:, None]
     col = rock * (1 - w) + ground * w
+    if terrain is not None:
+        # where the volume follows the heightfield it takes the terrain's colour exactly, so the
+        # edge of a terrain hole does not show; only faces away from it (overhang undersides,
+        # cave walls, landforms) get the rock and ground rule above
+        near = np.clip(1.0 - np.abs(p[:, 2] - gz) / 2.5, 0.0, 1.0)[:, None]
+        col = terrain * near + col * (1.0 - near)
     underground = np.clip((d0 - 6.0) / 10.0, 0.0, 1.0)[:, None]
     col = col * (1.0 - 0.35 * underground)
     out = np.empty((len(p), 4), dtype=np.uint8)

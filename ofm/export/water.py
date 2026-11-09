@@ -70,14 +70,17 @@ def creek_centrelines(world, step: float | None = None) -> list[tuple[dict, np.n
     return out
 
 
-def creek_meshes(world) -> list[tuple[dict, Mesh, np.ndarray]]:
+def creek_meshes(world, vol=None) -> list[tuple[dict, Mesh, np.ndarray]]:
     """Thin water strips draped on the detail ground along every creek: the export grid
     cannot carve a channel a few metres wide, so the water follows the ground just above it
-    (its edges cross the same ground, so it never floats and is never buried)."""
+    (its edges cross the same ground, so it never floats and is never buried). With the
+    volume, vertices where it replaces the heightfield (terrain holes on cliffs) follow the
+    volume surface instead, as scatter does."""
     out = []
     if world.hires is None:
         return out
     sp = world.hires_spacing
+    seat = vol is not None and vol.deviation is not None and vol.field is not None and vol.deviation.any()
     for creek, xy, half in creek_centrelines(world):
         d = np.gradient(xy, axis=0)
         d /= np.maximum(np.linalg.norm(d, axis=1, keepdims=True), 1e-9)
@@ -92,7 +95,16 @@ def creek_meshes(world) -> list[tuple[dict, Mesh, np.ndarray]]:
         # on steep ground the strip crosses creases between its vertices: lift it a little more
         tan = np.hypot(bilinear(world.hires, u + 0.5, v) - bilinear(world.hires, u - 0.5, v),
                        bilinear(world.hires, u, v + 0.5) - bilinear(world.hires, u, v - 0.5)) / sp
-        verts[:, 2] = g + CREEK_LIFT + np.minimum(0.25 * tan, 0.35)
+        lift = CREEK_LIFT + np.minimum(0.25 * tan, 0.35)
+        verts[:, 2] = g + lift
+        if seat:
+            from ..volume.builder import volume_ground
+            m = vol.deviation.shape[0]
+            dev = vol.deviation[np.clip(v.astype(int), 0, m - 1), np.clip(u.astype(int), 0, m - 1)]
+            if dev.any():
+                z, ok = volume_ground(vol.field, verts[dev, 0], verts[dev, 1], g[dev])
+                k = np.flatnonzero(dev)[ok]
+                verts[k, 2] = z[ok] + lift[k]
         a = np.arange(n - 1) * 3
         tris = np.vstack([np.stack([a, a + 1, a + 4], 1), np.stack([a, a + 4, a + 3], 1),
                           np.stack([a + 1, a + 2, a + 5], 1), np.stack([a + 1, a + 5, a + 4], 1)]).astype(np.uint32)

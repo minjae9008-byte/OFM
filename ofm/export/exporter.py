@@ -24,6 +24,7 @@ import numpy as np
 from PIL import Image
 
 from .. import __version__
+from ..detail.materials import detail_splat
 from ..grid import bilinear, resample
 from ..physics.biome import BIOME_NAMES, MATERIALS
 from ..volume.builder import VolumeResult, seat_objects
@@ -72,8 +73,9 @@ def export_terrain(world: World, vol: VolumeResult, out: Path) -> dict:
     splat_res = res - 1
     layers = []
     weights = []
+    detail = detail_splat(world)          # materials refined on the detail grid (vertex-aligned)
     for k, (name, color) in enumerate(MATERIALS):
-        w = _cells_at_vertices(world.splat[..., k], splat_res, world)
+        w = resample(detail[..., k], (splat_res, splat_res))
         weights.append(np.clip(w, 0, 1))
         layers.append({"name": name, "color": list(color)})
     wst = np.stack(weights, axis=-1)
@@ -96,7 +98,7 @@ def export_terrain(world: World, vol: VolumeResult, out: Path) -> dict:
     Image.fromarray(np.clip(np.round(vals), 0, 65535).astype(np.uint16)[::-1]).save(tdir / "heightmap_ue.png")
     ue_layers = []
     for k, (name, _) in enumerate(MATERIALS):
-        lw = _cells_at_vertices(world.splat[..., k], ue_res, world)
+        lw = resample(detail[..., k], (ue_res, ue_res))
         p = tdir / f"ue_layer_{name}.png"
         Image.fromarray(np.round(np.clip(lw, 0, 1) * 255).astype(np.uint8)[::-1]).save(p)
         ue_layers.append({"name": name, "file": _rel(p, out)})
@@ -147,7 +149,7 @@ def export_meshes(world: World, vol: VolumeResult, out: Path, glb: bool = True) 
     return entries
 
 
-def export_water(world: World, out: Path, glb: bool = True) -> dict:
+def export_water(world: World, out: Path, glb: bool = True, vol: VolumeResult | None = None) -> dict:
     wdir = out / "water"
     wdir.mkdir(parents=True, exist_ok=True)
     lakes, rivers = [], []
@@ -164,7 +166,7 @@ def export_water(world: World, out: Path, glb: bool = True) -> dict:
             write_glb(mesh, wdir / f"{name}.glb", origin, name, uvs, (0.25, 0.45, 0.65, 0.8), alpha_blend=True)
             e["glb"] = f"water/{name}.glb"
         lakes.append(e)
-    for river, mesh, uvs in list(river_meshes(world)) + list(creek_meshes(world)):
+    for river, mesh, uvs in list(river_meshes(world)) + list(creek_meshes(world, vol)):
         origin = mesh.positions.min(axis=0)
         name = river["id"]
         write_ofmmesh(mesh, wdir / f"{name}.ofmmesh", origin, uvs)
@@ -315,7 +317,7 @@ def export_world(world: World, vol: VolumeResult, out_dir: str | Path) -> Path:
     cfg = world.cfg
     terrain = export_terrain(world, vol, out)
     meshes = export_meshes(world, vol, out, cfg.export.glb)
-    water = export_water(world, out, cfg.export.glb)
+    water = export_water(world, out, cfg.export.glb, vol)
     # objects where the volume replaces the heightfield stand on the volume surface
     seated, poi_z = seat_objects(world, vol)
     scatter = export_scatter(world, out, seated)

@@ -90,12 +90,10 @@ def classify(height, temperature, precipitation, ocean, lake_mask, river_mask, p
     return biome
 
 
-def splat_weights(height, biome, temperature, cell: float, hardness: np.ndarray,
-                  river_mask: np.ndarray) -> np.ndarray:
-    """Per-cell weights for MATERIALS, shape (H, W, 8), rows sum to 1."""
+def _biome_terms(biome: np.ndarray, river_mask: np.ndarray) -> np.ndarray:
+    """Material weights a biome (and a river bed) brings, before slope and temperature."""
     n = len(MATERIALS)
-    w = np.zeros(height.shape + (n,))
-    s_deg = np.degrees(np.arctan(slope(height, cell)))
+    w = np.zeros(biome.shape + (n,))
     g, ff, dirt, sand, rock, snow, mud, gravel = range(n)
 
     def add(mask, idx, val=1.0):
@@ -113,17 +111,33 @@ def splat_weights(height, biome, temperature, cell: float, hardness: np.ndarray,
     add(biome == B["tundra"], gravel, 0.6)
     add(biome == B["wetland"], mud, 0.8)
     add(biome == B["glacier"], snow, 2.0)
+    add(biome == B["alpine_rock"], rock, 2.0)
     add(river_mask, gravel, 1.2)
+    return w
 
-    rockiness = smoothstep(30.0, 48.0, s_deg) * (0.6 + 0.4 * hardness)
-    w[..., rock] += rockiness * 3.0 + np.where(biome == B["alpine_rock"], 2.0, 0.0)
-    snowy = smoothstep(-1.0, -5.0, temperature) * (1.0 - smoothstep(40.0, 55.0, s_deg))
-    w[..., snow] += snowy * 3.0
+
+def _physical_terms(w: np.ndarray, s_deg: np.ndarray, temperature: np.ndarray, hardness: np.ndarray) -> None:
+    """Rock on steep hard ground, snow where it is cold and not too steep, dirt on slopes."""
+    rock, snow, dirt = 4, 5, 2
+    w[..., rock] += smoothstep(30.0, 48.0, s_deg) * (0.6 + 0.4 * hardness) * 3.0
+    w[..., snow] += smoothstep(-1.0, -5.0, temperature) * (1.0 - smoothstep(40.0, 55.0, s_deg)) * 3.0
     w[..., dirt] += smoothstep(18.0, 32.0, s_deg) * 0.6
 
-    for k in range(n):
-        w[..., k] = blur(w[..., k], 0.8)
+
+def _normalize(w: np.ndarray) -> np.ndarray:
     total = w.sum(axis=-1, keepdims=True)
     w = np.where(total > 1e-6, w / np.maximum(total, 1e-6), 0.0)
-    w[..., g] += np.where(total[..., 0] <= 1e-6, 1.0, 0.0)
+    w[..., 0] += np.where(total[..., 0] <= 1e-6, 1.0, 0.0)
     return w
+
+
+def splat_weights(height, biome, temperature, cell: float, hardness: np.ndarray,
+                  river_mask: np.ndarray) -> np.ndarray:
+    """Per-cell weights for MATERIALS on the simulation grid, shape (H, W, 8), rows sum to 1
+    (the export grid refines them: ``detail.materials.detail_splat``)."""
+    w = _biome_terms(biome, river_mask)
+    s_deg = np.degrees(np.arctan(slope(height, cell)))
+    _physical_terms(w, s_deg, temperature, hardness)
+    for k in range(w.shape[-1]):
+        w[..., k] = blur(w[..., k], 0.8)
+    return _normalize(w)

@@ -202,6 +202,7 @@ def simulate_hydrology(cfg: OFMConfig, height: np.ndarray, temperature: np.ndarr
 
     rivers, waterfalls = _trace_rivers(river, receiver, q, h_out, width, chan_depth, water, cell, hc, floor)
     creeks = []
+    creek = np.zeros_like(river)
     if 0.0 < hc.creek_min_discharge < hc.river_min_discharge:
         creek = (q >= hc.creek_min_discharge) & ~river & ~water
         creeks = _trace_creeks(creek, receiver, q, h_out, river | water, cell, hc)
@@ -225,6 +226,7 @@ def simulate_hydrology(cfg: OFMConfig, height: np.ndarray, temperature: np.ndarr
         "river_mask": river,
         "rivers": rivers,
         "creeks": creeks,
+        "creek_mask": creek,
         "waterfalls": waterfalls,
         "water_table": water_table,
     }
