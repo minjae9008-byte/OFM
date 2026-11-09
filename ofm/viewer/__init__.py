@@ -32,7 +32,7 @@ def _b64(a: np.ndarray) -> str:
     return base64.b64encode(np.ascontiguousarray(a).tobytes()).decode("ascii")
 
 
-def _terrain(world, vol) -> dict:
+def _terrain(world, vol, kept_columns: set | None = None) -> dict:
     from ..detail.materials import detail_splat, material_rgb
     h0 = world.hires
     n0 = h0.shape[0]
@@ -47,19 +47,31 @@ def _terrain(world, vol) -> dict:
     rgb = np.clip(material_rgb(world, w, X, Y, h), 0, 255).astype(np.uint8)
     holes = np.zeros((n - 1, n - 1), dtype=np.uint8)
     if vol is not None and vol.holes is not None and vol.holes.any():
-        hv = vol.holes[: (n - 1) * stride, : (n - 1) * stride]
+        hv = vol.holes[: (n - 1) * stride, : (n - 1) * stride].copy()
+        if kept_columns is not None and vol.chunks:
+            # a chunk left out of the viewer must not leave its hole open: keep the heightfield there
+            col = world.cfg.volume.chunk_voxels * world.cfg.volume.voxel_size
+            m = hv.shape[0]
+            cx = (np.arange(m) + 0.5) * world.hires_spacing // col
+            keep = np.zeros_like(hv)
+            for ci, cj in kept_columns:
+                keep[np.ix_(cx == cj, cx == ci)] = True
+            hv &= keep
         holes = hv.reshape(n - 1, stride, n - 1, stride).any(axis=(1, 3)).astype(np.uint8)
     return {"n": n, "spacing": world.hires_spacing * stride, "hmin": hmin, "hmax": hmax,
             "h": _b64(q), "rgb": _b64(rgb), "holes": _b64(holes)}
 
 
-def _volume(vol) -> list[dict]:
+def _volume(vol) -> tuple[list[dict], set]:
+    """Volume chunks for the viewer, and the (i, j) columns they cover. Beyond the triangle
+    budget the chunks that fill terrain holes come first (cliffs, cave mouths, landforms)."""
     if vol is None or not vol.chunks:
-        return []
+        return [], set()
     chunks = sorted(vol.chunks, key=lambda c: -len(c.mesh.indices))
     total = sum(len(c.mesh.indices) for c in chunks)
     out = []
     kept = 0
+    cols = set()
     for ch in chunks:
         m = ch.mesh
         if not len(m.indices):
@@ -67,6 +79,7 @@ def _volume(vol) -> list[dict]:
         if total > VIEWER_MAX_TRIANGLES and kept + len(m.indices) > VIEWER_MAX_TRIANGLES:
             continue
         kept += len(m.indices)
+        cols.add(tuple(int(v) for v in ch.key))
         p = np.asarray(m.positions, dtype=np.float64)
         lo, hi = p.min(axis=0), p.max(axis=0)
         span = np.maximum(hi - lo, 1e-3)
@@ -78,7 +91,7 @@ def _volume(vol) -> list[dict]:
         out.append({"lo": [float(v) for v in lo], "span": [float(v) for v in span],
                     "p": _b64(qp), "i": _b64(idx.astype("<u4" if wide else "<u2")), "wide": wide,
                     "c": _b64(col), "kinds": list(ch.kinds)})
-    return out
+    return out, cols
 
 
 def _water(world, vol=None) -> dict:
@@ -214,6 +227,7 @@ def viewer_payload(world, vol, manifest: dict, report: dict | None = None, layer
     keep["rivers"] = [{"id": r["id"], "name": r.get("name", ""), "length_m": r.get("length_m"),
                        "kind": r.get("kind", "river")} for r in manifest.get("water", {}).get("rivers", [])]
     keep["scatter"] = [{"type": s["type"], "count": s["count"]} for s in manifest.get("scatter", [])]
+    volume, cols = _volume(vol)
     payload = {
         "format": "ofm-viewer", "version": 1,
         "world": keep,
@@ -224,8 +238,8 @@ def viewer_payload(world, vol, manifest: dict, report: dict | None = None, layer
             "review": (report or {}).get("review") or world.evaluation.get("review", {}),
             "score_keys": SCORE_KEYS,
         },
-        "terrain": _terrain(world, vol),
-        "volume": _volume(vol),
+        "terrain": _terrain(world, vol, cols),
+        "volume": volume,
         "water": _water(world, vol),
         "agents": _agents(world),
         "layers": layers or [],

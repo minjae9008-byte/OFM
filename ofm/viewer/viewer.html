@@ -163,6 +163,7 @@ if (!D) {
   return;
 }
 const W = D.world, E = D.evaluation || {}, T = D.terrain;
+const FULL = (W.mesh_mode || (W.volume || {}).mode) === 'full';
 const EXT = W.extent_m, SEA = W.sea_level;
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
@@ -641,6 +642,15 @@ void main() { if (uRound > 0.5) { vec2 q = gl_PointCoord - 0.5; if (dot(q, q) > 
     labelBox.appendChild(d); return [m, d];
   });
   labelEls.sort((a, b) => (b[0].type === 'spawn') - (a[0].type === 'spawn') || b[0].imp - a[0].imp);
+  // is the straight line from the eye to a point blocked by the ground? (labels behind a hill dim)
+  function hidden(e, q) {
+    for (let k = 1; k < 24; k++) {
+      const t = k / 24, x = e[0] + (q[0] - e[0]) * t, y = e[1] + (q[1] - e[1]) * t, z = e[2] + (q[2] - e[2]) * t;
+      if (x < 0 || y < 0 || x > EXT || y > EXT) continue;
+      if ((groundAt(x, y) - Z0) * exag + Z0 > z + 1.0) return true;
+    }
+    return false;
+  }
   function placeLabels() {
     const show = $('lyLabels').checked && $('lyMarkers').checked;
     const range = cam.mode === 'walk' ? 900 : Math.max(500, cam.dist * 1.6);
@@ -654,6 +664,7 @@ void main() { if (uRound > 0.5) { vec2 q = gl_PointCoord - 0.5; if (dot(q, q) > 
           const w = m.name.length * 7 + 8, b = [p[0] - w / 2, p[1] - 18, p[0] + w / 2, p[1]];
           if (!boxes.some((o) => b[0] < o[2] && b[2] > o[0] && b[1] < o[3] && b[3] > o[1])) {
             boxes.push(b); d.style.left = p[0] + 'px'; d.style.top = p[1] + 'px'; vis = true;
+            d.style.opacity = hidden(camPos, [m.x, m.y, z]) ? '0.35' : '1';
           }
         }
       }
@@ -705,8 +716,9 @@ void main() { if (uRound > 0.5) { vec2 q = gl_PointCoord - 0.5; if (dot(q, q) > 
     gl.uniform1f(lit.u.uWater, 0); gl.uniform1f(lit.u.uTintK, 0); gl.uniform3fv(lit.u.uTint, [1, 0.3, 0.3]);
     gl.uniform1f(lit.u.uExag, exag); gl.uniform1f(lit.u.uZ0, Z0);
     const draw = (m, mode = gl.TRIANGLES) => { gl.bindVertexArray(m.vao); if (m.type) gl.drawElements(mode, m.count, m.type, 0); else gl.drawArrays(mode, 0, m.count); };
-    draw(terrain);
     const showVol = $('lyVolume').checked;
+    // "full" mesh mode exports the whole world as volume: the heightfield only stands in when it is hidden
+    if (!(FULL && showVol && volume.length)) draw(terrain);
     if (holeMesh && !showVol) draw(holeMesh);              // without the volume, close the holes with the heightfield
     if (showVol) {
       if ($('lyHoles').checked) { gl.uniform1f(lit.u.uTintK, 0.55); }

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import os
 import re
 import subprocess
 import sys
@@ -147,8 +148,9 @@ class Studio:
                    "--mesh-mode", p["mesh_mode"], "--out", str(job.out)]
             job.log.append("$ " + " ".join(cmd[1:]))
             try:
+                env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
                 job.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                            encoding="utf-8", errors="replace", bufsize=1)
+                                            encoding="utf-8", errors="replace", bufsize=1, env=env)
                 for line in job.proc.stdout:
                     job.log.append(line.rstrip())
                 code = job.proc.wait()
